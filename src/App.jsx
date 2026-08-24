@@ -3,7 +3,7 @@ import {
   LayoutGrid, FileText, PlusCircle, BarChart3, ShieldCheck, Users, Building2,
   Truck, CalendarDays, Settings, HelpCircle, Menu, X, Bell, LogOut, Search,
   Filter, Download, ChevronRight, Clock, CheckCircle2, AlertTriangle, IndianRupee,
-  ArrowRight, MapPin, User as UserIcon, FileStack, History, Paperclip
+  ArrowRight, MapPin, User as UserIcon, FileStack, History, Paperclip, Trash2
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -285,7 +285,7 @@ function Header({ onMenu, notifCount, userEmail, onLogout }) {
 
 /* ------------------------------ Dashboard ------------------------------ */
 
-function Dashboard({ bills, setActive }) {
+function Dashboard({ bills, setActive, userEmail }) {
   const stats = useMemo(() => {
     const total = bills.length;
     const totalAmt = bills.reduce((s, b) => s + b.netAmount, 0);
@@ -316,7 +316,7 @@ function Dashboard({ bills, setActive }) {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold" style={{ color: NAVY }}>Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-0.5">Welcome back, System Administrator. Here's the current bill tracking overview.</p>
+        <p className="text-sm text-slate-500 mt-0.5">Welcome back{userEmail ? `, ${userEmail}` : ""}. Here's the current bill tracking overview.</p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -395,7 +395,7 @@ function BillMiniList({ bills }) {
 
 /* ------------------------------ All Bills ------------------------------ */
 
-function AllBills({ bills, onOpen, setActive }) {
+function AllBills({ bills, onOpen, setActive, onDelete }) {
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [showFilters, setShowFilters] = useState(false);
@@ -411,6 +411,13 @@ function AllBills({ bills, onOpen, setActive }) {
     const header = ["Bill ID", "Contractor", "Site", "Bill Type", "Bill Date", "Net Amount", "Status", "Current Holder", "Days Pending"];
     const rows = filtered.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, currentHolder(b), daysBetween(b.dateReceived, Date.now())]);
     downloadCsv("all-bills.csv", header, rows);
+  };
+
+  const handleDeleteClick = (e, bill) => {
+    e.stopPropagation();
+    if (window.confirm(`Delete bill ${bill.id} (${bill.contractor})? This cannot be undone.`)) {
+      onDelete(bill.id);
+    }
   };
 
   return (
@@ -441,7 +448,7 @@ function AllBills({ bills, onOpen, setActive }) {
         </div>
         {showFilters && (
           <div className="flex flex-wrap gap-2 pt-1">
-            {["All", ...WORKFLOW.map(w => w.status), "Query Raised", "Returned to Contractor", "Rejected", "On Hold"].map(s => (
+            {["All", ...WORKFLOW.map(w => w.status), "Query Raised", "Returned to Contractor", "Rejected", "On Hold", "Payment Hold"].map(s => (
               <button key={s} onClick={() => setStatusFilter(s)}
                 className={`px-3 py-1.5 rounded-full text-xs font-medium border ${statusFilter === s ? "text-white border-transparent" : "text-slate-600 border-slate-300"}`}
                 style={statusFilter === s ? { backgroundColor: NAVY } : {}}>
@@ -464,6 +471,7 @@ function AllBills({ bills, onOpen, setActive }) {
                   <th className="px-5 py-3 font-semibold">Status</th>
                   <th className="px-5 py-3 font-semibold">Holder</th>
                   <th className="px-5 py-3 font-semibold">Pending</th>
+                  <th className="px-5 py-3 font-semibold text-right">Delete</th>
                 </tr>
               </thead>
               <tbody>
@@ -481,6 +489,15 @@ function AllBills({ bills, onOpen, setActive }) {
                       <td className="px-5 py-3 text-slate-500">{currentHolder(b)}</td>
                       <td className="px-5 py-3">
                         {isOpenBill(b) ? <span className={`font-semibold ${days > 15 ? "text-red-600" : days > 7 ? "text-amber-600" : "text-slate-600"}`}>{days}d</span> : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        <button
+                          onClick={(e) => handleDeleteClick(e, b)}
+                          title={`Delete bill ${b.id}`}
+                          className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50"
+                        >
+                          <Trash2 size={16} />
+                        </button>
                       </td>
                     </tr>
                   );
@@ -629,7 +646,7 @@ const ACTIONS_BY_STATUS = {
   "Payment Hold": [{ label: "Resume Processing", to: "Payment Processing" }],
 };
 
-function BillDetail({ bill, onBack, onTransition }) {
+function BillDetail({ bill, onBack, onTransition, onDelete }) {
   const [remarks, setRemarks] = useState("");
   const [pendingAction, setPendingAction] = useState(null);
   const days = daysBetween(bill.dateReceived, Date.now());
@@ -655,9 +672,21 @@ function BillDetail({ bill, onBack, onTransition }) {
     setPendingAction(null); setRemarks("");
   };
 
+  const handleDelete = () => {
+    if (window.confirm(`Delete bill ${bill.id} (${bill.contractor})? This cannot be undone.`)) {
+      onDelete(bill.id);
+      onBack();
+    }
+  };
+
   return (
     <div className="space-y-5">
-      <button onClick={onBack} className="text-sm font-medium text-slate-500 flex items-center gap-1">← Back to All Bills</button>
+      <div className="flex items-center justify-between">
+        <button onClick={onBack} className="text-sm font-medium text-slate-500 flex items-center gap-1">← Back to All Bills</button>
+        <button onClick={handleDelete} className="flex items-center gap-1.5 text-sm font-medium text-red-600 hover:text-red-700 px-3 py-1.5 rounded-lg hover:bg-red-50">
+          <Trash2 size={15} /> Delete Bill
+        </button>
+      </div>
 
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -1370,6 +1399,10 @@ export default function App({ user, onLogout }) {
     persist(next);
   }, [bills, persist, user]);
 
+  const handleDeleteBill = useCallback((billId) => {
+    persist(bills.filter(b => b.id !== billId));
+  }, [bills, persist]);
+
   const notifCount = bills.filter(b => isOpenBill(b) && daysBetween(b.dateReceived, Date.now()) > 7).length;
   const openBill = bills.find(b => b.id === openBillId);
 
@@ -1383,9 +1416,9 @@ export default function App({ user, onLogout }) {
       <div className="flex-1 min-w-0 flex flex-col">
         <Header onMenu={() => setSidebarOpen(true)} notifCount={notifCount} userEmail={user?.email} onLogout={onLogout} />
         <main className="flex-1 p-4 sm:p-6 max-w-[1400px] w-full mx-auto">
-          {active === "dashboard" && <Dashboard bills={bills} setActive={setActive} />}
-          {active === "bills" && !openBill && <AllBills bills={bills} onOpen={setOpenBillId} setActive={setActive} />}
-          {active === "bills" && openBill && <BillDetail bill={openBill} onBack={() => setOpenBillId(null)} onTransition={handleTransition} />}
+          {active === "dashboard" && <Dashboard bills={bills} setActive={setActive} userEmail={user?.email} />}
+          {active === "bills" && !openBill && <AllBills bills={bills} onOpen={setOpenBillId} setActive={setActive} onDelete={handleDeleteBill} />}
+          {active === "bills" && openBill && <BillDetail bill={openBill} onBack={() => setOpenBillId(null)} onTransition={handleTransition} onDelete={handleDeleteBill} />}
           {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} contractors={contractors} sites={projects} />}
           {active === "reports" && <Reports bills={bills} />}
           {active === "management" && <ManagementDashboard bills={bills} />}
