@@ -49,8 +49,11 @@ const STATUS_COLOR = {
   "Payment Hold": "#DC2626",
 };
 
-const CONTRACTORS = ["Shree Balaji Construction", "Nova Infra Works", "Om Sai Builders", "Vertex Engineering Pvt Ltd"];
-const SITES = ["Skyline Residency - Tower A", "Skyline Residency - Tower B", "Green Valley Phase 2", "Metro Business Park"];
+// These are only the *starting* lists — used to seed Supabase the very first time
+// the app runs. After that, Projects and Contractors are editable in the app and
+// persisted to Supabase (see the "billtrack:projects" / "billtrack:contractors" keys).
+const DEFAULT_CONTRACTORS = ["Shree Balaji Construction", "Nova Infra Works", "Om Sai Builders", "Vertex Engineering Pvt Ltd"];
+const DEFAULT_SITES = ["Skyline Residency - Tower A", "Skyline Residency - Tower B", "Green Valley Phase 2", "Metro Business Park"];
 const BILL_TYPES = ["RA Bill", "Final Bill", "Material Bill", "Other"];
 const NAV_ITEMS = [
   { id: "dashboard", label: "Dashboard", icon: LayoutGrid },
@@ -138,7 +141,7 @@ function seedBills() {
     }
     return {
       id: makeBillId(i + 1),
-      contractor: CONTRACTORS[r.c], site: SITES[r.s], building: "Wing " + String.fromCharCode(65 + (i % 3)),
+      contractor: DEFAULT_CONTRACTORS[r.c], site: DEFAULT_SITES[r.s], building: "Wing " + String.fromCharCode(65 + (i % 3)),
       workOrder: `WO-${2026}-${100 + i}`, po: `PO-${4000 + i}`, contractorBillNo: `CB-${300 + i}`,
       billType: r.type, billDate: received, billPeriod: "Monthly", grossAmount: r.gross, gst, tds,
       otherDeductions: 0, netAmount: net, dateReceived: received, submittedBy: "Priya Nair",
@@ -502,18 +505,23 @@ function downloadCsv(filename, header, rows) {
 
 /* ---------------------------- Register Bill ----------------------------- */
 
-function RegisterBill({ onCreate, nextId }) {
+function RegisterBill({ onCreate, nextId, contractors, sites }) {
   const [form, setForm] = useState({
     contractor: "", site: "", building: "", workOrder: "", po: "", contractorBillNo: "",
     billType: "RA Bill", billDate: new Date().toISOString().slice(0, 10), billPeriod: "",
     grossAmount: "", gst: "", tds: "", otherDeductions: "", submittedBy: "", remarks: "",
   });
+  const [error, setError] = useState("");
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const net = (Number(form.grossAmount) || 0) + (Number(form.gst) || 0) - (Number(form.tds) || 0) - (Number(form.otherDeductions) || 0);
 
   const submit = (e) => {
     e.preventDefault();
-    if (!form.contractor || !form.site) return;
+    if (!form.contractor || !form.site) {
+      setError("Please select a Contractor and a Site before submitting.");
+      return;
+    }
+    setError("");
     onCreate({ ...form, grossAmount: Number(form.grossAmount) || 0, gst: Number(form.gst) || 0, tds: Number(form.tds) || 0, otherDeductions: Number(form.otherDeductions) || 0, netAmount: net });
   };
 
@@ -528,13 +536,13 @@ function RegisterBill({ onCreate, nextId }) {
             <Field label="Contractor" required>
               <select className={inputCls} value={form.contractor} onChange={e => set("contractor", e.target.value)}>
                 <option value="">Select Contractor</option>
-                {CONTRACTORS.map(c => <option key={c}>{c}</option>)}
+                {contractors.map(c => <option key={c}>{c}</option>)}
               </select>
             </Field>
             <Field label="Site / Project" required>
               <select className={inputCls} value={form.site} onChange={e => set("site", e.target.value)}>
                 <option value="">Select Site</option>
-                {SITES.map(s => <option key={s}>{s}</option>)}
+                {sites.map(s => <option key={s}>{s}</option>)}
               </select>
             </Field>
             <Field label="Building / Wing"><input className={inputCls} value={form.building} onChange={e => set("building", e.target.value)} /></Field>
@@ -571,6 +579,12 @@ function RegisterBill({ onCreate, nextId }) {
             Drop Bill PDF, Measurement Sheet, Abstract, Work Order/PO, or other supporting documents here
           </div>
         </SectionCard>
+
+        {error && (
+          <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-2.5">
+            {error}
+          </div>
+        )}
 
         <button type="submit" className="w-full sm:w-auto px-6 py-3 rounded-xl text-white font-semibold text-sm" style={{ backgroundColor: NAVY }}>
           Register Bill at Site
@@ -1141,6 +1155,78 @@ function SimpleListPage({ title, sub, items, icon: Icon }) {
   );
 }
 
+function ManagedListPage({ title, sub, items, icon: Icon, onAdd, onDelete, placeholder, singular }) {
+  const [newItem, setNewItem] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = (e) => {
+    e.preventDefault();
+    const trimmed = newItem.trim();
+    if (!trimmed) { setError(`Enter a ${singular.toLowerCase()} name.`); return; }
+    if (items.some(it => it.toLowerCase() === trimmed.toLowerCase())) {
+      setError(`"${trimmed}" is already on the list.`);
+      return;
+    }
+    setError("");
+    onAdd(trimmed);
+    setNewItem("");
+  };
+
+  const remove = (item) => {
+    if (window.confirm(`Remove "${item}"? Existing bills that reference it will keep showing this name — this only affects the dropdown for new bills.`)) {
+      onDelete(item);
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-bold" style={{ color: NAVY }}>{title}</h1>
+        <p className="text-sm text-slate-500">{sub}</p>
+      </div>
+
+      <SectionCard title={`Add ${singular}`} icon={PlusCircle}>
+        <form onSubmit={submit} className="flex flex-col sm:flex-row gap-2">
+          <input
+            className={inputCls}
+            placeholder={placeholder}
+            value={newItem}
+            onChange={(e) => setNewItem(e.target.value)}
+          />
+          <button type="submit" className="px-4 py-2.5 rounded-lg text-white text-sm font-semibold shrink-0" style={{ backgroundColor: NAVY }}>
+            Add {singular}
+          </button>
+        </form>
+        {error && <div className="text-sm text-red-600 mt-2">{error}</div>}
+      </SectionCard>
+
+      <SectionCard title={title} icon={Icon}>
+        {items.length === 0 ? (
+          <Empty text={`No ${title.toLowerCase()} yet — add one above.`} />
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {items.map((it) => (
+              <li key={it} className="py-3 flex items-center justify-between gap-2">
+                <span className="text-sm text-slate-700 flex items-center gap-2 min-w-0">
+                  <Icon size={15} className="text-slate-400 shrink-0" />
+                  <span className="truncate">{it}</span>
+                </span>
+                <button
+                  onClick={() => remove(it)}
+                  title={`Remove ${it}`}
+                  className="text-slate-400 hover:text-red-600 shrink-0 p-1"
+                >
+                  <X size={16} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
 function GuidePage() {
   const steps = [
     ["Contractor submits bill", "Physical/digital bill handed to the Site Billing Engineer."],
@@ -1173,18 +1259,22 @@ export default function App({ user, onLogout }) {
   const [active, setActive] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [bills, setBills] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [contractors, setContractors] = useState([]);
   const [openBillId, setOpenBillId] = useState(null);
   const [loaded, setLoaded] = useState(false);
 
-  // Bills are shared company-wide data: every signed-in user reads/writes the
-  // same "billtrack:bills" record (shared=true), rather than a private copy.
+  // Bills, Projects, and Contractors are shared company-wide data: every
+  // signed-in user reads/writes the same records (shared=true), rather than
+  // a private copy each. Projects/Contractors are only seeded with the
+  // defaults the first time the app ever runs — after that, whatever's in
+  // Supabase wins, and adding/removing from the app updates Supabase directly.
   useEffect(() => {
     (async () => {
       try {
         const res = await storage.get("billtrack:bills", true);
         if (res && res.value) {
-          const parsed = JSON.parse(res.value);
-          setBills(parsed);
+          setBills(JSON.parse(res.value));
         } else {
           const seeded = seedBills();
           setBills(seeded);
@@ -1194,6 +1284,33 @@ export default function App({ user, onLogout }) {
         console.error("Failed to load bills from Supabase:", e);
         setBills(seedBills());
       }
+
+      try {
+        const res = await storage.get("billtrack:projects", true);
+        if (res && res.value) {
+          setProjects(JSON.parse(res.value));
+        } else {
+          setProjects(DEFAULT_SITES);
+          await storage.set("billtrack:projects", JSON.stringify(DEFAULT_SITES), true);
+        }
+      } catch (e) {
+        console.error("Failed to load projects from Supabase:", e);
+        setProjects(DEFAULT_SITES);
+      }
+
+      try {
+        const res = await storage.get("billtrack:contractors", true);
+        if (res && res.value) {
+          setContractors(JSON.parse(res.value));
+        } else {
+          setContractors(DEFAULT_CONTRACTORS);
+          await storage.set("billtrack:contractors", JSON.stringify(DEFAULT_CONTRACTORS), true);
+        }
+      } catch (e) {
+        console.error("Failed to load contractors from Supabase:", e);
+        setContractors(DEFAULT_CONTRACTORS);
+      }
+
       setLoaded(true);
     })();
   }, []);
@@ -1202,6 +1319,21 @@ export default function App({ user, onLogout }) {
     setBills(next);
     try { await storage.set("billtrack:bills", JSON.stringify(next), true); } catch (e) { console.error("Failed to save bills:", e); }
   }, []);
+
+  const persistProjects = useCallback(async (next) => {
+    setProjects(next);
+    try { await storage.set("billtrack:projects", JSON.stringify(next), true); } catch (e) { console.error("Failed to save projects:", e); }
+  }, []);
+
+  const persistContractors = useCallback(async (next) => {
+    setContractors(next);
+    try { await storage.set("billtrack:contractors", JSON.stringify(next), true); } catch (e) { console.error("Failed to save contractors:", e); }
+  }, []);
+
+  const addProject = useCallback((name) => persistProjects([...projects, name]), [projects, persistProjects]);
+  const deleteProject = useCallback((name) => persistProjects(projects.filter((p) => p !== name)), [projects, persistProjects]);
+  const addContractor = useCallback((name) => persistContractors([...contractors, name]), [contractors, persistContractors]);
+  const deleteContractor = useCallback((name) => persistContractors(contractors.filter((c) => c !== name)), [contractors, persistContractors]);
 
   const handleCreate = useCallback((form) => {
     const nextSeq = bills.length + 1;
@@ -1254,13 +1386,25 @@ export default function App({ user, onLogout }) {
           {active === "dashboard" && <Dashboard bills={bills} setActive={setActive} />}
           {active === "bills" && !openBill && <AllBills bills={bills} onOpen={setOpenBillId} setActive={setActive} />}
           {active === "bills" && openBill && <BillDetail bill={openBill} onBack={() => setOpenBillId(null)} onTransition={handleTransition} />}
-          {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} />}
+          {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} contractors={contractors} sites={projects} />}
           {active === "reports" && <Reports bills={bills} />}
           {active === "management" && <ManagementDashboard bills={bills} />}
           {active === "users" && <SimpleListPage title="Users" sub="Manage user roles and access" icon={Users}
             items={["System Administrator — Super Admin", "Priya Nair — Site Billing Engineer", "Ramesh Yadav — Runner Boy", "Ajay Kulkarni — HO Billing Engineer", "Sunita Rao — Admin", "Vikram Shah — Accounts"]} />}
-          {active === "projects" && <SimpleListPage title="Projects" sub="Sites and projects under tracking" icon={Building2} items={SITES} />}
-          {active === "contractors" && <SimpleListPage title="Contractors" sub="Registered contractors" icon={Truck} items={CONTRACTORS} />}
+          {active === "projects" && (
+            <ManagedListPage
+              title="Projects" sub="Sites and projects under tracking" icon={Building2} singular="Project"
+              placeholder="e.g. Lakeview Heights - Tower C"
+              items={projects} onAdd={addProject} onDelete={deleteProject}
+            />
+          )}
+          {active === "contractors" && (
+            <ManagedListPage
+              title="Contractors" sub="Registered contractors" icon={Truck} singular="Contractor"
+              placeholder="e.g. Everest Construction Co."
+              items={contractors} onAdd={addContractor} onDelete={deleteContractor}
+            />
+          )}
           {active === "holidays" && <SimpleListPage title="Holidays" sub="Excluded from working-day pending calculations" icon={CalendarDays}
             items={["26 Jan 2026 — Republic Day", "15 Aug 2026 — Independence Day", "02 Oct 2026 — Gandhi Jayanti", "25 Dec 2026 — Christmas"]} />}
           {active === "settings" && <SimpleListPage title="Settings" sub="System configuration" icon={Settings}
