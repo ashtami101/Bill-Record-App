@@ -10,7 +10,7 @@ import {
   Tooltip, Legend, CartesianGrid, LineChart, Line
 } from "recharts";
 import { storage } from "./storage";
-import { supabase } from "./supabaseClient";
+import { supabase, supabaseNoSession } from "./supabaseClient";
 
 /* ----------------------------- constants ----------------------------- */
 
@@ -81,7 +81,7 @@ const businessDays = (a, b) => {
   return count;
 };
 const uid = () => Math.random().toString(36).slice(2, 10);
-const generatePin = () => String(Math.floor(1000 + Math.random() * 9000));
+const generatePin = () => String(Math.floor(100000 + Math.random() * 900000));
 
 // Starting team directory — seeded into Supabase the very first time the app
 // runs. After that, editable from the Users page (add/delete/reset PIN).
@@ -1361,15 +1361,18 @@ function ManagedListPage({ title, sub, items, icon: Icon, onAdd, onDelete, place
   );
 }
 
-function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, superAdminConfigured }) {
+function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, currentUserEmail, superAdminConfigured }) {
   const [name, setName] = useState("");
   const [designation, setDesignation] = useState(DESIGNATION_OPTIONS[0]);
   const [customDesignation, setCustomDesignation] = useState("");
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [successBanner, setSuccessBanner] = useState(null); // { name, pin, loginStatus, loginError }
   const [visiblePins, setVisiblePins] = useState({});
+  const [resetNotice, setResetNotice] = useState({}); // id -> message
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
     const n = name.trim();
     const d = (designation === "Other" ? customDesignation : designation).trim();
@@ -1383,7 +1386,11 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, su
       return;
     }
     setError("");
-    onAdd(n, d, em);
+    setSuccessBanner(null);
+    setBusy(true);
+    const result = await onAdd(n, d, em);
+    setBusy(false);
+    setSuccessBanner({ name: n, ...result });
     setName("");
     setDesignation(DESIGNATION_OPTIONS[0]);
     setCustomDesignation("");
@@ -1399,10 +1406,17 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, su
   };
 
   const resetPin = (u) => {
-    if (window.confirm(`Generate a new PIN for ${u.name}? Their old PIN will stop working immediately.`)) {
+    if (window.confirm(`Regenerate ${u.name}'s PIN in this directory? Note: this does NOT change their actual login password — use "Send Password Reset Email" for that.`)) {
       onResetPin(u.id);
       setVisiblePins(v => ({ ...v, [u.id]: true }));
     }
+  };
+
+  const sendReset = async (u) => {
+    if (!u.email) return;
+    setResetNotice(v => ({ ...v, [u.id]: "Sending…" }));
+    const result = await onSendReset(u.email);
+    setResetNotice(v => ({ ...v, [u.id]: result.ok ? "Reset email sent." : (result.message || "Failed to send.") }));
   };
 
   return (
@@ -1429,14 +1443,34 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, su
             <input className={`${inputCls} sm:col-span-2`} placeholder="Type the designation" value={customDesignation} onChange={e => setCustomDesignation(e.target.value)} />
           )}
           <input className={`${inputCls} sm:col-span-2`} type="email" placeholder="Login email (the email they'll use to sign in)" value={email} onChange={e => setEmail(e.target.value)} />
-          <button type="submit" className="sm:col-span-2 px-4 py-2.5 rounded-lg text-white text-sm font-semibold" style={{ backgroundColor: NAVY }}>
-            Add User
+          <button type="submit" disabled={busy} className="sm:col-span-2 px-4 py-2.5 rounded-lg text-white text-sm font-semibold disabled:opacity-60" style={{ backgroundColor: NAVY }}>
+            {busy ? "Creating…" : "Add User"}
           </button>
         </form>
         {error && <div className="text-sm text-red-600 mt-2">{error}</div>}
+
+        {successBanner && successBanner.loginStatus === "created" && (
+          <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800">
+            <strong>{successBanner.name}</strong> can now sign in. Share these with them:
+            <div className="mt-1.5 font-mono text-sm bg-white border border-teal-200 rounded-lg px-3 py-2 inline-block">
+              PIN / Password: <strong>{successBanner.pin}</strong>
+            </div>
+          </div>
+        )}
+        {successBanner && successBanner.loginStatus === "already_existed" && (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Added <strong>{successBanner.name}</strong> to the directory, but that email already has a login account —
+            their existing password still works, it was <strong>not</strong> changed to this new PIN. If you need to reset their password, use "Send Password Reset Email" below.
+          </div>
+        )}
+        {successBanner && successBanner.loginStatus === "failed" && (
+          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            Added <strong>{successBanner.name}</strong> to the directory, but couldn't create their login: {successBanner.loginError}
+          </div>
+        )}
+
         <p className="text-xs text-slate-400 mt-3">
-          The person still needs to create their own login (email + password) from the login screen using this exact email —
-          this just tells the app who they are and what they can do once they sign in. A 4-digit PIN is also generated for your reference.
+          Adding someone here creates their actual login too — their PIN becomes their password. They can sign in right away with their email and that PIN.
         </p>
       </SectionCard>
 
@@ -1456,10 +1490,11 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, su
                   </div>
                   <div className="text-xs text-slate-400">{u.designation}</div>
                   <div className="text-xs text-slate-400">{u.email || <span className="italic">No login email set</span>}</div>
+                  {resetNotice[u.id] && <div className="text-xs text-teal-600 mt-0.5">{resetNotice[u.id]}</div>}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                   <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
-                    <span className="font-mono text-sm text-slate-700 tracking-wider">{visiblePins[u.id] ? u.pin : "••••"}</span>
+                    <span className="font-mono text-sm text-slate-700 tracking-wider">{visiblePins[u.id] ? u.pin : "••••••"}</span>
                     <button onClick={() => togglePin(u.id)} className="text-slate-400 hover:text-slate-600" title={visiblePins[u.id] ? "Hide PIN" : "Show PIN"}>
                       {visiblePins[u.id] ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
@@ -1467,6 +1502,11 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, su
                   <button onClick={() => resetPin(u)} className="text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">
                     Reset PIN
                   </button>
+                  {u.email && (
+                    <button onClick={() => sendReset(u)} className="text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">
+                      Send Password Reset Email
+                    </button>
+                  )}
                   <button onClick={() => remove(u)} title={`Remove ${u.name}`} className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50">
                     <Trash2 size={16} />
                   </button>
@@ -1608,8 +1648,33 @@ export default function App({ user, onLogout }) {
     try { await storage.set("billtrack:users", JSON.stringify(next), true); } catch (e) { console.error("Failed to save users:", e); }
   }, []);
 
-  const addUser = useCallback((name, designation, email) => {
-    persistUsers([...users, { id: uid(), name, designation, email: email || "", pin: generatePin() }]);
+  const addUser = useCallback(async (name, designation, email) => {
+    const pin = generatePin();
+    let loginStatus = "created"; // "created" | "already_existed" | "failed"
+    let loginError = "";
+
+    if (email) {
+      try {
+        const { error } = await supabaseNoSession.auth.signUp({ email, password: pin });
+        if (error) {
+          if (/already registered|already exists/i.test(error.message || "")) {
+            loginStatus = "already_existed";
+          } else {
+            loginStatus = "failed";
+            loginError = error.message;
+          }
+        }
+      } catch (e) {
+        loginStatus = "failed";
+        loginError = e.message || "Could not reach Supabase.";
+      }
+    } else {
+      loginStatus = "failed";
+      loginError = "No email provided — this person won't be able to log in.";
+    }
+
+    await persistUsers([...users, { id: uid(), name, designation, email: email || "", pin }]);
+    return { pin, loginStatus, loginError };
   }, [users, persistUsers]);
 
   const deleteUser = useCallback((id) => {
@@ -1619,6 +1684,16 @@ export default function App({ user, onLogout }) {
   const resetUserPin = useCallback((id) => {
     persistUsers(users.map((u) => (u.id === id ? { ...u, pin: generatePin() } : u)));
   }, [users, persistUsers]);
+
+  const sendPasswordReset = useCallback(async (email) => {
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email);
+      if (error) throw error;
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: e.message || "Could not send the reset email." };
+    }
+  }, []);
 
   const handleCreate = useCallback((form) => {
     const nextSeq = bills.length + 1;
@@ -1747,7 +1822,7 @@ export default function App({ user, onLogout }) {
           {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} contractors={contractors} sites={projects} />}
           {active === "reports" && <Reports bills={bills} />}
           {active === "management" && <ManagementDashboard bills={bills} />}
-          {active === "users" && canSeeUsers && <UsersManager users={users} onAdd={addUser} onDelete={deleteUser} onResetPin={resetUserPin} currentUserEmail={user?.email} superAdminConfigured={superAdminConfigured} />}
+          {active === "users" && canSeeUsers && <UsersManager users={users} onAdd={addUser} onDelete={deleteUser} onResetPin={resetUserPin} onSendReset={sendPasswordReset} currentUserEmail={user?.email} superAdminConfigured={superAdminConfigured} />}
           {active === "users" && !canSeeUsers && (
             <div className="text-sm text-slate-500">You don't have access to this page.</div>
           )}
