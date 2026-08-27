@@ -10,7 +10,7 @@ import {
   Tooltip, Legend, CartesianGrid, LineChart, Line
 } from "recharts";
 import { storage } from "./storage";
-import { supabase, supabaseNoSession } from "./supabaseClient";
+import { supabase, supabaseNoSession, callEdgeFunction } from "./supabaseClient";
 
 /* ----------------------------- constants ----------------------------- */
 
@@ -1407,7 +1407,11 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
   const togglePin = (id) => setVisiblePins(v => ({ ...v, [id]: !v[id] }));
 
   const remove = (u) => {
-    if (window.confirm(`Remove ${u.name}? This won't affect any bills already assigned to them.`)) {
+    const msg = u.authUserId
+      ? `Delete ${u.name}? This removes them from the directory AND deletes their actual login — they won't be able to sign in anymore. This can't be undone.`
+      : `Remove ${u.name} from the directory? Note: their login account (if they have one) was created before this feature existed, so it can't be auto-deleted here — you'd need to remove it from the Supabase dashboard directly.`;
+    if (window.confirm(msg)) {
+      setSuccessBanner(null);
       onDelete(u.id);
     }
   };
@@ -1674,10 +1678,11 @@ export default function App({ user, onLogout }) {
   const addUser = useCallback(async (name, designation, email, pin) => {
     let loginStatus = "created"; // "created" | "already_existed" | "failed"
     let loginError = "";
+    let authUserId = null;
 
     if (email) {
       try {
-        const { error } = await supabaseNoSession.auth.signUp({ email, password: pin });
+        const { data, error } = await supabaseNoSession.auth.signUp({ email, password: pin });
         if (error) {
           if (/already registered|already exists/i.test(error.message || "")) {
             loginStatus = "already_existed";
@@ -1685,6 +1690,8 @@ export default function App({ user, onLogout }) {
             loginStatus = "failed";
             loginError = error.message;
           }
+        } else {
+          authUserId = data?.user?.id || null;
         }
       } catch (e) {
         loginStatus = "failed";
@@ -1695,11 +1702,28 @@ export default function App({ user, onLogout }) {
       loginError = "No email provided — this person won't be able to log in.";
     }
 
-    await persistUsers([...users, { id: uid(), name, designation, email: email || "", pin }]);
+    await persistUsers([...users, { id: uid(), name, designation, email: email || "", pin, authUserId }]);
     return { pin, loginStatus, loginError };
   }, [users, persistUsers]);
 
-  const deleteUser = useCallback((id) => {
+  // Deletes both the directory entry AND the person's actual login, via a
+  // Supabase Edge Function (the only safe place to use the admin key needed
+  // to delete someone else's login). Directory entries created before this
+  // feature existed don't have an authUserId on file, so for those we can
+  // only remove the directory entry — their real login has to be deleted
+  // from the Supabase dashboard directly.
+  const deleteUser = useCallback(async (id) => {
+    const target = users.find((u) => u.id === id);
+    if (target?.authUserId) {
+      try {
+        await callEdgeFunction("delete-user", { userId: target.authUserId });
+      } catch (e) {
+        const proceedAnyway = window.confirm(
+          `Couldn't delete ${target.name}'s login (${e.message}).\n\nRemove them from this directory anyway? Their login will still work until removed from Supabase directly.`
+        );
+        if (!proceedAnyway) return;
+      }
+    }
     persistUsers(users.filter((u) => u.id !== id));
   }, [users, persistUsers]);
 
