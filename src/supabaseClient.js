@@ -15,3 +15,13 @@ export const supabase = createClient(
   supabaseUrl || "https://placeholder.supabase.co",
   supabaseAnonKey || "placeholder-anon-key"
 );
+
+// A second client that does NOT persist or share a session with the main one.
+// Used only when an admin registers a brand-new login for someone else, so
+// that action never overwrites or logs out the admin's own active session
+// (Supabase's signUp() call otherwise also signs in as the new account).
+export const supabaseNoSession = createClient(
+  supabaseUrl || "https://placeholder.supabase.co",
+  supabaseAnonKey || "placeholder-anon-key",
+  { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
+);
