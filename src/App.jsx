@@ -3,7 +3,7 @@ import {
   LayoutGrid, FileText, PlusCircle, BarChart3, ShieldCheck, Users, Building2,
   Truck, CalendarDays, Settings, HelpCircle, Menu, X, Bell, LogOut, Search,
   Filter, Download, ChevronRight, Clock, CheckCircle2, AlertTriangle, IndianRupee,
-  ArrowRight, MapPin, User as UserIcon, FileStack, History, Paperclip, Trash2, Eye, EyeOff
+  ArrowRight, MapPin, User as UserIcon, FileStack, History, Paperclip, Trash2, Eye, EyeOff, RefreshCw
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -1366,6 +1366,7 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
   const [designation, setDesignation] = useState(DESIGNATION_OPTIONS[0]);
   const [customDesignation, setCustomDesignation] = useState("");
   const [email, setEmail] = useState("");
+  const [pin, setPin] = useState(() => generatePin());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [successBanner, setSuccessBanner] = useState(null); // { name, pin, loginStatus, loginError }
@@ -1377,8 +1378,13 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
     const n = name.trim();
     const d = (designation === "Other" ? customDesignation : designation).trim();
     const em = email.trim().toLowerCase();
-    if (!n || !d || !em) {
-      setError("Enter a name, designation, and login email.");
+    const pw = pin.trim();
+    if (!n || !d || !em || !pw) {
+      setError("Enter a name, designation, login email, and password.");
+      return;
+    }
+    if (pw.length < 6) {
+      setError("Password must be at least 6 characters.");
       return;
     }
     if (users.some(u => u.email && u.email.toLowerCase() === em)) {
@@ -1388,13 +1394,14 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
     setError("");
     setSuccessBanner(null);
     setBusy(true);
-    const result = await onAdd(n, d, em);
+    const result = await onAdd(n, d, em, pw);
     setBusy(false);
     setSuccessBanner({ name: n, ...result });
     setName("");
     setDesignation(DESIGNATION_OPTIONS[0]);
     setCustomDesignation("");
     setEmail("");
+    setPin(generatePin());
   };
 
   const togglePin = (id) => setVisiblePins(v => ({ ...v, [id]: !v[id] }));
@@ -1443,6 +1450,22 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
             <input className={`${inputCls} sm:col-span-2`} placeholder="Type the designation" value={customDesignation} onChange={e => setCustomDesignation(e.target.value)} />
           )}
           <input className={`${inputCls} sm:col-span-2`} type="email" placeholder="Login email (the email they'll use to sign in)" value={email} onChange={e => setEmail(e.target.value)} />
+          <div className="sm:col-span-2 flex gap-2">
+            <input
+              className={inputCls}
+              placeholder="Password (min 6 characters) — auto-filled, edit if you'd like"
+              value={pin}
+              onChange={e => setPin(e.target.value)}
+            />
+            <button
+              type="button"
+              onClick={() => setPin(generatePin())}
+              title="Generate a new random password"
+              className="px-3 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 shrink-0"
+            >
+              <RefreshCw size={15} />
+            </button>
+          </div>
           <button type="submit" disabled={busy} className="sm:col-span-2 px-4 py-2.5 rounded-lg text-white text-sm font-semibold disabled:opacity-60" style={{ backgroundColor: NAVY }}>
             {busy ? "Creating…" : "Add User"}
           </button>
@@ -1470,7 +1493,7 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
         )}
 
         <p className="text-xs text-slate-400 mt-3">
-          Adding someone here creates their actual login too — their PIN becomes their password. They can sign in right away with their email and that PIN.
+          Adding someone here creates their actual login too. A password is filled in for you (6 digits) — leave it as-is or type your own before adding them.
         </p>
       </SectionCard>
 
@@ -1648,8 +1671,7 @@ export default function App({ user, onLogout }) {
     try { await storage.set("billtrack:users", JSON.stringify(next), true); } catch (e) { console.error("Failed to save users:", e); }
   }, []);
 
-  const addUser = useCallback(async (name, designation, email) => {
-    const pin = generatePin();
+  const addUser = useCallback(async (name, designation, email, pin) => {
     let loginStatus = "created"; // "created" | "already_existed" | "failed"
     let loginError = "";
 
