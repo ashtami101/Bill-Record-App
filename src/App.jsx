@@ -3,7 +3,7 @@ import {
   LayoutGrid, FileText, PlusCircle, BarChart3, ShieldCheck, Users, Building2,
   Truck, CalendarDays, Settings, HelpCircle, Menu, X, Bell, LogOut, Search,
   Filter, Download, ChevronRight, Clock, CheckCircle2, AlertTriangle, IndianRupee,
-  ArrowRight, MapPin, User as UserIcon, FileStack, History, Paperclip, Trash2, Eye, EyeOff, RefreshCw
+  ArrowRight, MapPin, User as UserIcon, FileStack, History, Paperclip, Trash2, RefreshCw
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -84,7 +84,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const generatePin = () => String(Math.floor(100000 + Math.random() * 900000));
 
 // Starting team directory — seeded into Supabase the very first time the app
-// runs. After that, editable from the Users page (add/delete/reset PIN).
+// runs. After that, editable from the Users page (add/delete users).
 // "email" is empty for the starter entries on purpose — nobody is granted any
 // special role until an admin explicitly links a real login email to a name.
 const DEFAULT_USERS_SEED = [
@@ -1361,7 +1361,7 @@ function ManagedListPage({ title, sub, items, icon: Icon, onAdd, onDelete, place
   );
 }
 
-function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, currentUserEmail, superAdminConfigured }) {
+function UsersManager({ users, onAdd, onDelete, onSendReset, currentUserEmail, superAdminConfigured }) {
   const [name, setName] = useState("");
   const [designation, setDesignation] = useState(DESIGNATION_OPTIONS[0]);
   const [customDesignation, setCustomDesignation] = useState("");
@@ -1370,7 +1370,6 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [successBanner, setSuccessBanner] = useState(null); // { name, pin, loginStatus, loginError }
-  const [visiblePins, setVisiblePins] = useState({});
   const [resetNotice, setResetNotice] = useState({}); // id -> message
 
   const submit = async (e) => {
@@ -1404,8 +1403,6 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
     setPin(generatePin());
   };
 
-  const togglePin = (id) => setVisiblePins(v => ({ ...v, [id]: !v[id] }));
-
   const remove = (u) => {
     const msg = u.authUserId
       ? `Delete ${u.name}? This removes them from the directory AND deletes their actual login — they won't be able to sign in anymore. This can't be undone.`
@@ -1413,13 +1410,6 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
     if (window.confirm(msg)) {
       setSuccessBanner(null);
       onDelete(u.id);
-    }
-  };
-
-  const resetPin = (u) => {
-    if (window.confirm(`Regenerate ${u.name}'s PIN in this directory? Note: this does NOT change their actual login password — use "Send Password Reset Email" for that.`)) {
-      onResetPin(u.id);
-      setVisiblePins(v => ({ ...v, [u.id]: true }));
     }
   };
 
@@ -1434,7 +1424,7 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold" style={{ color: NAVY }}>Users</h1>
-        <p className="text-sm text-slate-500">Manage user roles, login access, and PINs</p>
+        <p className="text-sm text-slate-500">Manage user roles and login access</p>
       </div>
 
       {!superAdminConfigured && (
@@ -1480,14 +1470,14 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
           <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800">
             <strong>{successBanner.name}</strong> can now sign in. Share these with them:
             <div className="mt-1.5 font-mono text-sm bg-white border border-teal-200 rounded-lg px-3 py-2 inline-block">
-              PIN / Password: <strong>{successBanner.pin}</strong>
+              Password: <strong>{successBanner.pin}</strong>
             </div>
           </div>
         )}
         {successBanner && successBanner.loginStatus === "already_existed" && (
           <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             Added <strong>{successBanner.name}</strong> to the directory, but that email already has a login account —
-            their existing password still works, it was <strong>not</strong> changed to this new PIN. If you need to reset their password, use "Send Password Reset Email" below.
+            their existing password still works, it was <strong>not</strong> changed to this new password. If you need to reset their password, use "Send Password Reset Email" below.
           </div>
         )}
         {successBanner && successBanner.loginStatus === "failed" && (
@@ -1520,15 +1510,6 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, onSendReset, current
                   {resetNotice[u.id] && <div className="text-xs text-teal-600 mt-0.5">{resetNotice[u.id]}</div>}
                 </div>
                 <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-                  <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
-                    <span className="font-mono text-sm text-slate-700 tracking-wider">{visiblePins[u.id] ? u.pin : "••••••"}</span>
-                    <button onClick={() => togglePin(u.id)} className="text-slate-400 hover:text-slate-600" title={visiblePins[u.id] ? "Hide PIN" : "Show PIN"}>
-                      {visiblePins[u.id] ? <EyeOff size={14} /> : <Eye size={14} />}
-                    </button>
-                  </div>
-                  <button onClick={() => resetPin(u)} className="text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">
-                    Reset PIN
-                  </button>
                   {u.email && (
                     <button onClick={() => sendReset(u)} className="text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">
                       Send Password Reset Email
@@ -1727,10 +1708,6 @@ export default function App({ user, onLogout }) {
     persistUsers(users.filter((u) => u.id !== id));
   }, [users, persistUsers]);
 
-  const resetUserPin = useCallback((id) => {
-    persistUsers(users.map((u) => (u.id === id ? { ...u, pin: generatePin() } : u)));
-  }, [users, persistUsers]);
-
   const sendPasswordReset = useCallback(async (email) => {
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email);
@@ -1868,7 +1845,7 @@ export default function App({ user, onLogout }) {
           {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} contractors={contractors} sites={projects} />}
           {active === "reports" && <Reports bills={bills} />}
           {active === "management" && <ManagementDashboard bills={bills} />}
-          {active === "users" && canSeeUsers && <UsersManager users={users} onAdd={addUser} onDelete={deleteUser} onResetPin={resetUserPin} onSendReset={sendPasswordReset} currentUserEmail={user?.email} superAdminConfigured={superAdminConfigured} />}
+          {active === "users" && canSeeUsers && <UsersManager users={users} onAdd={addUser} onDelete={deleteUser} onSendReset={sendPasswordReset} currentUserEmail={user?.email} superAdminConfigured={superAdminConfigured} />}
           {active === "users" && !canSeeUsers && (
             <div className="text-sm text-slate-500">You don't have access to this page.</div>
           )}
