@@ -85,13 +85,15 @@ const generatePin = () => String(Math.floor(1000 + Math.random() * 9000));
 
 // Starting team directory — seeded into Supabase the very first time the app
 // runs. After that, editable from the Users page (add/delete/reset PIN).
+// "email" is empty for the starter entries on purpose — nobody is granted any
+// special role until an admin explicitly links a real login email to a name.
 const DEFAULT_USERS_SEED = [
-  { name: "System Administrator", designation: "Super Admin" },
-  { name: "Priya Nair", designation: "Site Billing Engineer" },
-  { name: "Ramesh Yadav", designation: "Runner" },
-  { name: "Ajay Kulkarni", designation: "HO Billing Engineer" },
-  { name: "Sunita Rao", designation: "Admin" },
-  { name: "Vikram Shah", designation: "Accounts" },
+  { name: "System Administrator", designation: "Super Admin", email: "" },
+  { name: "Priya Nair", designation: "Site Billing Engineer", email: "" },
+  { name: "Ramesh Yadav", designation: "Runner", email: "" },
+  { name: "Ajay Kulkarni", designation: "HO Billing Engineer", email: "" },
+  { name: "Sunita Rao", designation: "Admin", email: "" },
+  { name: "Vikram Shah", designation: "Accounts", email: "" },
 ];
 const makeDefaultUsers = () => DEFAULT_USERS_SEED.map(u => ({ id: uid(), ...u, pin: generatePin() }));
 
@@ -109,6 +111,62 @@ function currentHolder(bill) {
 
 function isOpenBill(bill) {
   return bill.status !== "Paid" && bill.status !== "Rejected";
+}
+
+// Can the currently logged-in profile Accept/Reject/Transfer this bill?
+// - Super Admin can always act (keeps things from getting stuck).
+// - If the bill is already assigned to a specific person, only that person can act.
+// - If unassigned, anyone whose designation matches the bill's current role-based
+//   holder (e.g. "Runner", "HO Billing Engineer") can claim it.
+function canActOnBill(bill, profile) {
+  if (!profile) return false;
+  if (!isOpenBill(bill)) return false;
+  if (profile.designation === "Super Admin") return true;
+  if (bill.assignedTo) return bill.assignedTo === profile.id;
+  return profile.designation === currentHolder(bill);
+}
+
+function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTransfer }) {
+  const [transferTo, setTransferTo] = useState("");
+
+  if (!isOpenBill(bill) || !canActOnBill(bill, profile)) {
+    return <span className="text-slate-300 text-sm">—</span>;
+  }
+
+  if (bill.awaitingTransfer) {
+    const otherUsers = users.filter(u => u.id !== profile.id);
+    return (
+      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+        <select
+          value={transferTo}
+          onChange={(e) => setTransferTo(e.target.value)}
+          className="text-xs rounded-lg border border-slate-300 px-2 py-1.5 max-w-[150px]"
+        >
+          <option value="">Transfer to...</option>
+          {otherUsers.map(u => <option key={u.id} value={u.id}>{u.name} ({u.designation})</option>)}
+        </select>
+        <button
+          disabled={!transferTo}
+          onClick={() => { if (transferTo) { onTransfer(bill.id, transferTo); setTransferTo(""); } }}
+          className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white disabled:opacity-40 shrink-0"
+          style={{ backgroundColor: TEAL }}
+        >
+          Transfer
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      <button onClick={() => onAccept(bill.id)} className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white" style={{ backgroundColor: "#16A34A" }}>
+        Accept
+      </button>
+      <button onClick={() => onReject(bill.id)} className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white" style={{ backgroundColor: RED }}>
+        Reject
+      </button>
+    </div>
+  );
 }
 
 function makeBillId(seq) {
@@ -225,7 +283,8 @@ const inputCls = "w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm 
 
 /* ------------------------------ Sidebar -------------------------------- */
 
-function Sidebar({ open, onClose, active, setActive }) {
+function Sidebar({ open, onClose, active, setActive, canSeeUsers }) {
+  const items = canSeeUsers ? NAV_ITEMS : NAV_ITEMS.filter(item => item.id !== "users");
   return (
     <>
       {open && <div className="fixed inset-0 bg-black/30 z-30 lg:hidden" onClick={onClose} />}
@@ -244,7 +303,7 @@ function Sidebar({ open, onClose, active, setActive }) {
           <button className="lg:hidden text-slate-400" onClick={onClose}><X size={20} /></button>
         </div>
         <nav className="py-3 px-3 space-y-0.5 overflow-y-auto" style={{ maxHeight: "calc(100% - 80px)" }}>
-          {NAV_ITEMS.map(item => {
+          {items.map(item => {
             const Icon = item.icon;
             const isActive = active === item.id;
             return (
@@ -408,7 +467,7 @@ function BillMiniList({ bills }) {
 
 /* ------------------------------ All Bills ------------------------------ */
 
-function AllBills({ bills, onOpen, setActive, onDelete }) {
+function AllBills({ bills, onOpen, setActive, onDelete, profile, users, onAccept, onReject, onTransfer }) {
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [showFilters, setShowFilters] = useState(false);
@@ -484,6 +543,7 @@ function AllBills({ bills, onOpen, setActive, onDelete }) {
                   <th className="px-5 py-3 font-semibold">Status</th>
                   <th className="px-5 py-3 font-semibold">Holder</th>
                   <th className="px-5 py-3 font-semibold">Pending</th>
+                  <th className="px-5 py-3 font-semibold">Action</th>
                   <th className="px-5 py-3 font-semibold text-right">Delete</th>
                 </tr>
               </thead>
@@ -502,6 +562,9 @@ function AllBills({ bills, onOpen, setActive, onDelete }) {
                       <td className="px-5 py-3 text-slate-500">{currentHolder(b)}</td>
                       <td className="px-5 py-3">
                         {isOpenBill(b) ? <span className={`font-semibold ${days > 15 ? "text-red-600" : days > 7 ? "text-amber-600" : "text-slate-600"}`}>{days}d</span> : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-5 py-3">
+                        <BillAssignmentAction bill={b} profile={profile} users={users} onAccept={onAccept} onReject={onReject} onTransfer={onTransfer} />
                       </td>
                       <td className="px-5 py-3 text-right">
                         <button
@@ -659,7 +722,7 @@ const ACTIONS_BY_STATUS = {
   "Payment Hold": [{ label: "Resume Processing", to: "Payment Processing" }],
 };
 
-function BillDetail({ bill, onBack, onTransition, onDelete }) {
+function BillDetail({ bill, onBack, onTransition, onDelete, profile, users, onAccept, onReject, onTransfer }) {
   const [remarks, setRemarks] = useState("");
   const [pendingAction, setPendingAction] = useState(null);
   const days = daysBetween(bill.dateReceived, Date.now());
@@ -716,6 +779,21 @@ function BillDetail({ bill, onBack, onTransition, onDelete }) {
         <StatCard icon={IndianRupee} label="Net Payable" value={fmtINR(bill.netAmount)} color={NAVY} />
         <StatCard icon={FileText} label="Bill Type" value={bill.billType} color="#2563EB" />
       </div>
+
+      {isOpenBill(bill) && (
+        <SectionCard title="Assignment" icon={UserIcon}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm text-slate-600">
+              {bill.assignedTo ? (
+                <>Currently with <span className="font-semibold" style={{ color: NAVY }}>{users.find(u => u.id === bill.assignedTo)?.name || "Unknown user"}</span> ({users.find(u => u.id === bill.assignedTo)?.designation || currentHolder(bill)}){bill.awaitingTransfer && <span className="text-amber-600"> — accepted, choosing who to transfer to</span>}</>
+              ) : (
+                <>Not yet claimed — waiting on a <span className="font-semibold" style={{ color: NAVY }}>{currentHolder(bill)}</span> to accept it</>
+              )}
+            </div>
+            <BillAssignmentAction bill={bill} profile={profile} users={users} onAccept={onAccept} onReject={onReject} onTransfer={onTransfer} />
+          </div>
+        </SectionCard>
+      )}
 
       <div className="grid lg:grid-cols-3 gap-5">
         <div className="lg:col-span-2 space-y-5">
@@ -1269,9 +1347,10 @@ function ManagedListPage({ title, sub, items, icon: Icon, onAdd, onDelete, place
   );
 }
 
-function UsersManager({ users, onAdd, onDelete, onResetPin }) {
+function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, superAdminConfigured }) {
   const [name, setName] = useState("");
   const [designation, setDesignation] = useState("");
+  const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [visiblePins, setVisiblePins] = useState({});
 
@@ -1279,14 +1358,20 @@ function UsersManager({ users, onAdd, onDelete, onResetPin }) {
     e.preventDefault();
     const n = name.trim();
     const d = designation.trim();
-    if (!n || !d) {
-      setError("Enter both a name and a designation.");
+    const em = email.trim().toLowerCase();
+    if (!n || !d || !em) {
+      setError("Enter a name, designation, and login email.");
+      return;
+    }
+    if (users.some(u => u.email && u.email.toLowerCase() === em)) {
+      setError(`Someone is already linked to ${em}.`);
       return;
     }
     setError("");
-    onAdd(n, d);
+    onAdd(n, d, em);
     setName("");
     setDesignation("");
+    setEmail("");
   };
 
   const togglePin = (id) => setVisiblePins(v => ({ ...v, [id]: !v[id] }));
@@ -1308,19 +1393,30 @@ function UsersManager({ users, onAdd, onDelete, onResetPin }) {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold" style={{ color: NAVY }}>Users</h1>
-        <p className="text-sm text-slate-500">Manage user roles, access, and PINs</p>
+        <p className="text-sm text-slate-500">Manage user roles, login access, and PINs</p>
       </div>
+
+      {!superAdminConfigured && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          No Super Admin is set up yet, so this page is temporarily visible to anyone signed in.
+          Add yourself below with your real login email and designation <strong>Super Admin</strong> — after that, only Super Admins will be able to see this page.
+        </div>
+      )}
 
       <SectionCard title="Add User" icon={PlusCircle}>
         <form onSubmit={submit} className="grid sm:grid-cols-2 gap-3">
           <input className={inputCls} placeholder="Full name" value={name} onChange={e => setName(e.target.value)} />
-          <input className={inputCls} placeholder="Designation (e.g. Site Billing Engineer)" value={designation} onChange={e => setDesignation(e.target.value)} />
+          <input className={inputCls} placeholder="Designation (e.g. Runner, HO Billing Engineer, Super Admin)" value={designation} onChange={e => setDesignation(e.target.value)} />
+          <input className={`${inputCls} sm:col-span-2`} type="email" placeholder="Login email (the email they'll use to sign in)" value={email} onChange={e => setEmail(e.target.value)} />
           <button type="submit" className="sm:col-span-2 px-4 py-2.5 rounded-lg text-white text-sm font-semibold" style={{ backgroundColor: NAVY }}>
             Add User
           </button>
         </form>
         {error && <div className="text-sm text-red-600 mt-2">{error}</div>}
-        <p className="text-xs text-slate-400 mt-3">A 4-digit PIN is generated automatically when you add someone. Only an admin can see or reset it.</p>
+        <p className="text-xs text-slate-400 mt-3">
+          The person still needs to create their own login (email + password) from the login screen using this exact email —
+          this just tells the app who they are and what they can do once they sign in. A 4-digit PIN is also generated for your reference.
+        </p>
       </SectionCard>
 
       <SectionCard title="Users" icon={Users}>
@@ -1331,8 +1427,14 @@ function UsersManager({ users, onAdd, onDelete, onResetPin }) {
             {users.map(u => (
               <li key={u.id} className="py-3 flex items-center justify-between gap-3 flex-wrap">
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold text-slate-700">{u.name}</div>
+                  <div className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                    {u.name}
+                    {currentUserEmail && u.email && u.email.toLowerCase() === currentUserEmail.toLowerCase() && (
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-700">You</span>
+                    )}
+                  </div>
                   <div className="text-xs text-slate-400">{u.designation}</div>
+                  <div className="text-xs text-slate-400">{u.email || <span className="italic">No login email set</span>}</div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
@@ -1485,8 +1587,8 @@ export default function App({ user, onLogout }) {
     try { await storage.set("billtrack:users", JSON.stringify(next), true); } catch (e) { console.error("Failed to save users:", e); }
   }, []);
 
-  const addUser = useCallback((name, designation) => {
-    persistUsers([...users, { id: uid(), name, designation, pin: generatePin() }]);
+  const addUser = useCallback((name, designation, email) => {
+    persistUsers([...users, { id: uid(), name, designation, email: email || "", pin: generatePin() }]);
   }, [users, persistUsers]);
 
   const deleteUser = useCallback((id) => {
@@ -1509,7 +1611,7 @@ export default function App({ user, onLogout }) {
       netAmount: form.netAmount, dateReceived: now, submittedBy: form.submittedBy || "Site Billing Engineer",
       remarks: form.remarks, documents: [], status: "Received at Site",
       history: [{ user: form.submittedBy || "Site Billing Engineer", role: "Site Billing Engineer", date: now, prevStatus: null, newStatus: "Received at Site", remarks: "Bill registered at site." }],
-      payment: null,
+      payment: null, assignedTo: null, awaitingTransfer: false,
     };
     persist([bill, ...bills]);
     setOpenBillId(id);
@@ -1536,8 +1638,67 @@ export default function App({ user, onLogout }) {
     persist(bills.filter(b => b.id !== billId));
   }, [bills, persist]);
 
+  // Resolve which Users-page entry (if any) matches the logged-in email —
+  // this is what tells the app someone's name/designation/permissions.
+  const profile = useMemo(() => {
+    if (!user?.email) return null;
+    return users.find(u => u.email && u.email.toLowerCase() === user.email.toLowerCase()) || null;
+  }, [users, user]);
+
+  const handleAcceptBill = useCallback((billId) => {
+    if (!profile) return;
+    const now = Date.now();
+    persist(bills.map(b => {
+      if (b.id !== billId) return b;
+      return {
+        ...b,
+        assignedTo: profile.id,
+        awaitingTransfer: true,
+        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, remarks: `Accepted by ${profile.name} (${profile.designation}).` }],
+      };
+    }));
+  }, [bills, persist, profile]);
+
+  const handleRejectBill = useCallback((billId) => {
+    if (!profile) return;
+    if (!window.confirm("Reject this bill? This marks it as Rejected and cannot be undone from here.")) return;
+    const now = Date.now();
+    persist(bills.map(b => {
+      if (b.id !== billId) return b;
+      return {
+        ...b,
+        status: "Rejected",
+        awaitingTransfer: false,
+        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: "Rejected", remarks: `Rejected by ${profile.name} (${profile.designation}).` }],
+      };
+    }));
+  }, [bills, persist, profile]);
+
+  const handleTransferBill = useCallback((billId, targetUserId) => {
+    if (!profile) return;
+    const target = users.find(u => u.id === targetUserId);
+    if (!target) return;
+    const now = Date.now();
+    persist(bills.map(b => {
+      if (b.id !== billId) return b;
+      return {
+        ...b,
+        assignedTo: target.id,
+        awaitingTransfer: false,
+        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, remarks: `Transferred to ${target.name} (${target.designation}) by ${profile.name}.` }],
+      };
+    }));
+  }, [bills, persist, profile, users]);
+
   const notifCount = bills.filter(b => isOpenBill(b) && daysBetween(b.dateReceived, Date.now()) > 7).length;
   const openBill = bills.find(b => b.id === openBillId);
+  // Bootstrap safety: if nobody has been set up as Super Admin yet (with a real
+  // login email), the Users page stays open to whoever is logged in, so someone
+  // can configure themselves as Super Admin. The moment a Super Admin with an
+  // email exists, this closes automatically and only that person (or anyone
+  // else marked Super Admin) can see Users.
+  const superAdminConfigured = users.some(u => u.designation === "Super Admin" && u.email);
+  const canSeeUsers = profile?.designation === "Super Admin" || !superAdminConfigured;
 
   if (!loaded) {
     return <div className="min-h-screen flex items-center justify-center text-slate-400 text-sm">Loading BillTrack Pro…</div>;
@@ -1545,17 +1706,30 @@ export default function App({ user, onLogout }) {
 
   return (
     <div className="min-h-screen bg-slate-50 flex" style={{ fontFamily: "Inter, ui-sans-serif, system-ui" }}>
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} active={active} setActive={(id) => { setActive(id); setOpenBillId(null); }} />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} active={active} setActive={(id) => { setActive(id); setOpenBillId(null); }} canSeeUsers={canSeeUsers} />
       <div className="flex-1 min-w-0 flex flex-col">
         <Header onMenu={() => setSidebarOpen(true)} notifCount={notifCount} userEmail={user?.email} onLogout={onLogout} />
         <main className="flex-1 p-4 sm:p-6 max-w-[1400px] w-full mx-auto">
           {active === "dashboard" && <Dashboard bills={bills} setActive={setActive} userEmail={user?.email} />}
-          {active === "bills" && !openBill && <AllBills bills={bills} onOpen={setOpenBillId} setActive={setActive} onDelete={handleDeleteBill} />}
-          {active === "bills" && openBill && <BillDetail bill={openBill} onBack={() => setOpenBillId(null)} onTransition={handleTransition} onDelete={handleDeleteBill} />}
+          {active === "bills" && !openBill && (
+            <AllBills
+              bills={bills} onOpen={setOpenBillId} setActive={setActive} onDelete={handleDeleteBill}
+              profile={profile} users={users} onAccept={handleAcceptBill} onReject={handleRejectBill} onTransfer={handleTransferBill}
+            />
+          )}
+          {active === "bills" && openBill && (
+            <BillDetail
+              bill={openBill} onBack={() => setOpenBillId(null)} onTransition={handleTransition} onDelete={handleDeleteBill}
+              profile={profile} users={users} onAccept={handleAcceptBill} onReject={handleRejectBill} onTransfer={handleTransferBill}
+            />
+          )}
           {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} contractors={contractors} sites={projects} />}
           {active === "reports" && <Reports bills={bills} />}
           {active === "management" && <ManagementDashboard bills={bills} />}
-          {active === "users" && <UsersManager users={users} onAdd={addUser} onDelete={deleteUser} onResetPin={resetUserPin} />}
+          {active === "users" && canSeeUsers && <UsersManager users={users} onAdd={addUser} onDelete={deleteUser} onResetPin={resetUserPin} currentUserEmail={user?.email} superAdminConfigured={superAdminConfigured} />}
+          {active === "users" && !canSeeUsers && (
+            <div className="text-sm text-slate-500">You don't have access to this page.</div>
+          )}
           {active === "projects" && (
             <ManagedListPage
               title="Projects" sub="Sites and projects under tracking" icon={Building2} singular="Project"
