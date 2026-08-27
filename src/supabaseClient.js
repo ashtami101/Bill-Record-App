@@ -25,3 +25,24 @@ export const supabaseNoSession = createClient(
   supabaseAnonKey || "placeholder-anon-key",
   { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
 );
+
+// Calls a Supabase Edge Function, attaching the current user's session so the
+// function can verify who's calling. Edge Functions run on Supabase's servers
+// (not in this app's code), which is the only safe place to use the powerful
+// "service role" key needed for admin actions like deleting someone's login.
+export async function callEdgeFunction(name, body) {
+  const { data } = await supabase.auth.getSession();
+  const accessToken = data?.session?.access_token;
+  const res = await fetch(`${supabaseUrl}/functions/v1/${name}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken || supabaseAnonKey}`,
+      apikey: supabaseAnonKey,
+    },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `Request failed (${res.status})`);
+  return json;
+}
