@@ -3,7 +3,7 @@ import {
   LayoutGrid, FileText, PlusCircle, BarChart3, ShieldCheck, Users, Building2,
   Truck, CalendarDays, Settings, HelpCircle, Menu, X, Bell, LogOut, Search,
   Filter, Download, ChevronRight, Clock, CheckCircle2, AlertTriangle, IndianRupee,
-  ArrowRight, MapPin, User as UserIcon, FileStack, History, Paperclip, Trash2
+  ArrowRight, MapPin, User as UserIcon, FileStack, History, Paperclip, Trash2, Eye, EyeOff
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -81,6 +81,19 @@ const businessDays = (a, b) => {
   return count;
 };
 const uid = () => Math.random().toString(36).slice(2, 10);
+const generatePin = () => String(Math.floor(1000 + Math.random() * 9000));
+
+// Starting team directory — seeded into Supabase the very first time the app
+// runs. After that, editable from the Users page (add/delete/reset PIN).
+const DEFAULT_USERS_SEED = [
+  { name: "System Administrator", designation: "Super Admin" },
+  { name: "Priya Nair", designation: "Site Billing Engineer" },
+  { name: "Ramesh Yadav", designation: "Runner" },
+  { name: "Ajay Kulkarni", designation: "HO Billing Engineer" },
+  { name: "Sunita Rao", designation: "Admin" },
+  { name: "Vikram Shah", designation: "Accounts" },
+];
+const makeDefaultUsers = () => DEFAULT_USERS_SEED.map(u => ({ id: uid(), ...u, pin: generatePin() }));
 
 function ageingBucket(days) {
   if (days <= 3) return "0-3 Days";
@@ -1256,6 +1269,94 @@ function ManagedListPage({ title, sub, items, icon: Icon, onAdd, onDelete, place
   );
 }
 
+function UsersManager({ users, onAdd, onDelete, onResetPin }) {
+  const [name, setName] = useState("");
+  const [designation, setDesignation] = useState("");
+  const [error, setError] = useState("");
+  const [visiblePins, setVisiblePins] = useState({});
+
+  const submit = (e) => {
+    e.preventDefault();
+    const n = name.trim();
+    const d = designation.trim();
+    if (!n || !d) {
+      setError("Enter both a name and a designation.");
+      return;
+    }
+    setError("");
+    onAdd(n, d);
+    setName("");
+    setDesignation("");
+  };
+
+  const togglePin = (id) => setVisiblePins(v => ({ ...v, [id]: !v[id] }));
+
+  const remove = (u) => {
+    if (window.confirm(`Remove ${u.name}? This won't affect any bills already assigned to them.`)) {
+      onDelete(u.id);
+    }
+  };
+
+  const resetPin = (u) => {
+    if (window.confirm(`Generate a new PIN for ${u.name}? Their old PIN will stop working immediately.`)) {
+      onResetPin(u.id);
+      setVisiblePins(v => ({ ...v, [u.id]: true }));
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-bold" style={{ color: NAVY }}>Users</h1>
+        <p className="text-sm text-slate-500">Manage user roles, access, and PINs</p>
+      </div>
+
+      <SectionCard title="Add User" icon={PlusCircle}>
+        <form onSubmit={submit} className="grid sm:grid-cols-2 gap-3">
+          <input className={inputCls} placeholder="Full name" value={name} onChange={e => setName(e.target.value)} />
+          <input className={inputCls} placeholder="Designation (e.g. Site Billing Engineer)" value={designation} onChange={e => setDesignation(e.target.value)} />
+          <button type="submit" className="sm:col-span-2 px-4 py-2.5 rounded-lg text-white text-sm font-semibold" style={{ backgroundColor: NAVY }}>
+            Add User
+          </button>
+        </form>
+        {error && <div className="text-sm text-red-600 mt-2">{error}</div>}
+        <p className="text-xs text-slate-400 mt-3">A 4-digit PIN is generated automatically when you add someone. Only an admin can see or reset it.</p>
+      </SectionCard>
+
+      <SectionCard title="Users" icon={Users}>
+        {users.length === 0 ? (
+          <Empty text="No users yet — add one above." />
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {users.map(u => (
+              <li key={u.id} className="py-3 flex items-center justify-between gap-3 flex-wrap">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-700">{u.name}</div>
+                  <div className="text-xs text-slate-400">{u.designation}</div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+                    <span className="font-mono text-sm text-slate-700 tracking-wider">{visiblePins[u.id] ? u.pin : "••••"}</span>
+                    <button onClick={() => togglePin(u.id)} className="text-slate-400 hover:text-slate-600" title={visiblePins[u.id] ? "Hide PIN" : "Show PIN"}>
+                      {visiblePins[u.id] ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
+                  <button onClick={() => resetPin(u)} className="text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">
+                    Reset PIN
+                  </button>
+                  <button onClick={() => remove(u)} title={`Remove ${u.name}`} className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
 function GuidePage() {
   const steps = [
     ["Contractor submits bill", "Physical/digital bill handed to the Site Billing Engineer."],
@@ -1290,6 +1391,7 @@ export default function App({ user, onLogout }) {
   const [bills, setBills] = useState([]);
   const [projects, setProjects] = useState([]);
   const [contractors, setContractors] = useState([]);
+  const [users, setUsers] = useState([]);
   const [openBillId, setOpenBillId] = useState(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -1340,6 +1442,20 @@ export default function App({ user, onLogout }) {
         setContractors(DEFAULT_CONTRACTORS);
       }
 
+      try {
+        const res = await storage.get("billtrack:users", true);
+        if (res && res.value) {
+          setUsers(JSON.parse(res.value));
+        } else {
+          const seededUsers = makeDefaultUsers();
+          setUsers(seededUsers);
+          await storage.set("billtrack:users", JSON.stringify(seededUsers), true);
+        }
+      } catch (e) {
+        console.error("Failed to load users from Supabase:", e);
+        setUsers(makeDefaultUsers());
+      }
+
       setLoaded(true);
     })();
   }, []);
@@ -1363,6 +1479,23 @@ export default function App({ user, onLogout }) {
   const deleteProject = useCallback((name) => persistProjects(projects.filter((p) => p !== name)), [projects, persistProjects]);
   const addContractor = useCallback((name) => persistContractors([...contractors, name]), [contractors, persistContractors]);
   const deleteContractor = useCallback((name) => persistContractors(contractors.filter((c) => c !== name)), [contractors, persistContractors]);
+
+  const persistUsers = useCallback(async (next) => {
+    setUsers(next);
+    try { await storage.set("billtrack:users", JSON.stringify(next), true); } catch (e) { console.error("Failed to save users:", e); }
+  }, []);
+
+  const addUser = useCallback((name, designation) => {
+    persistUsers([...users, { id: uid(), name, designation, pin: generatePin() }]);
+  }, [users, persistUsers]);
+
+  const deleteUser = useCallback((id) => {
+    persistUsers(users.filter((u) => u.id !== id));
+  }, [users, persistUsers]);
+
+  const resetUserPin = useCallback((id) => {
+    persistUsers(users.map((u) => (u.id === id ? { ...u, pin: generatePin() } : u)));
+  }, [users, persistUsers]);
 
   const handleCreate = useCallback((form) => {
     const nextSeq = bills.length + 1;
@@ -1422,8 +1555,7 @@ export default function App({ user, onLogout }) {
           {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} contractors={contractors} sites={projects} />}
           {active === "reports" && <Reports bills={bills} />}
           {active === "management" && <ManagementDashboard bills={bills} />}
-          {active === "users" && <SimpleListPage title="Users" sub="Manage user roles and access" icon={Users}
-            items={["System Administrator — Super Admin", "Priya Nair — Site Billing Engineer", "Ramesh Yadav — Runner Boy", "Ajay Kulkarni — HO Billing Engineer", "Sunita Rao — Admin", "Vikram Shah — Accounts"]} />}
+          {active === "users" && <UsersManager users={users} onAdd={addUser} onDelete={deleteUser} onResetPin={resetUserPin} />}
           {active === "projects" && (
             <ManagedListPage
               title="Projects" sub="Sites and projects under tracking" icon={Building2} singular="Project"
