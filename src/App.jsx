@@ -97,6 +97,13 @@ const DEFAULT_USERS_SEED = [
 ];
 const makeDefaultUsers = () => DEFAULT_USERS_SEED.map(u => ({ id: uid(), ...u, pin: generatePin() }));
 
+// Fixed designation list — a dropdown instead of free text so nobody can
+// accidentally lock themselves out of Super Admin (or a workflow role) with a
+// typo like "admin" vs "Admin" vs "Super  Admin". "Other" reveals a text box
+// for anything that genuinely doesn't fit (won't get special app permissions,
+// but is still useful for the directory).
+const DESIGNATION_OPTIONS = ["Super Admin", "Site Billing Engineer", "Runner", "HO Billing Engineer", "Admin", "Accounts", "Other"];
+
 function ageingBucket(days) {
   if (days <= 3) return "0-3 Days";
   if (days <= 7) return "4-7 Days";
@@ -113,6 +120,13 @@ function isOpenBill(bill) {
   return bill.status !== "Paid" && bill.status !== "Rejected";
 }
 
+// Designation matching is case/whitespace-insensitive on purpose — "admin",
+// "Admin", " Admin " should all count as the same role rather than silently
+// failing to match because of how someone happened to type it.
+const normalizeRole = (s) => (s || "").trim().toLowerCase();
+const isSuperAdmin = (designation) => normalizeRole(designation) === "super admin";
+const rolesMatch = (a, b) => normalizeRole(a) === normalizeRole(b) && normalizeRole(a) !== "";
+
 // Can the currently logged-in profile Accept/Reject/Transfer this bill?
 // - Super Admin can always act (keeps things from getting stuck).
 // - If the bill is already assigned to a specific person, only that person can act.
@@ -121,9 +135,9 @@ function isOpenBill(bill) {
 function canActOnBill(bill, profile) {
   if (!profile) return false;
   if (!isOpenBill(bill)) return false;
-  if (profile.designation === "Super Admin") return true;
+  if (isSuperAdmin(profile.designation)) return true;
   if (bill.assignedTo) return bill.assignedTo === profile.id;
-  return profile.designation === currentHolder(bill);
+  return rolesMatch(profile.designation, currentHolder(bill));
 }
 
 function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTransfer }) {
@@ -1349,7 +1363,8 @@ function ManagedListPage({ title, sub, items, icon: Icon, onAdd, onDelete, place
 
 function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, superAdminConfigured }) {
   const [name, setName] = useState("");
-  const [designation, setDesignation] = useState("");
+  const [designation, setDesignation] = useState(DESIGNATION_OPTIONS[0]);
+  const [customDesignation, setCustomDesignation] = useState("");
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [visiblePins, setVisiblePins] = useState({});
@@ -1357,7 +1372,7 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, su
   const submit = (e) => {
     e.preventDefault();
     const n = name.trim();
-    const d = designation.trim();
+    const d = (designation === "Other" ? customDesignation : designation).trim();
     const em = email.trim().toLowerCase();
     if (!n || !d || !em) {
       setError("Enter a name, designation, and login email.");
@@ -1370,7 +1385,8 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, su
     setError("");
     onAdd(n, d, em);
     setName("");
-    setDesignation("");
+    setDesignation(DESIGNATION_OPTIONS[0]);
+    setCustomDesignation("");
     setEmail("");
   };
 
@@ -1406,7 +1422,12 @@ function UsersManager({ users, onAdd, onDelete, onResetPin, currentUserEmail, su
       <SectionCard title="Add User" icon={PlusCircle}>
         <form onSubmit={submit} className="grid sm:grid-cols-2 gap-3">
           <input className={inputCls} placeholder="Full name" value={name} onChange={e => setName(e.target.value)} />
-          <input className={inputCls} placeholder="Designation (e.g. Runner, HO Billing Engineer, Super Admin)" value={designation} onChange={e => setDesignation(e.target.value)} />
+          <select className={inputCls} value={designation} onChange={e => setDesignation(e.target.value)}>
+            {DESIGNATION_OPTIONS.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+          {designation === "Other" && (
+            <input className={`${inputCls} sm:col-span-2`} placeholder="Type the designation" value={customDesignation} onChange={e => setCustomDesignation(e.target.value)} />
+          )}
           <input className={`${inputCls} sm:col-span-2`} type="email" placeholder="Login email (the email they'll use to sign in)" value={email} onChange={e => setEmail(e.target.value)} />
           <button type="submit" className="sm:col-span-2 px-4 py-2.5 rounded-lg text-white text-sm font-semibold" style={{ backgroundColor: NAVY }}>
             Add User
@@ -1697,8 +1718,8 @@ export default function App({ user, onLogout }) {
   // can configure themselves as Super Admin. The moment a Super Admin with an
   // email exists, this closes automatically and only that person (or anyone
   // else marked Super Admin) can see Users.
-  const superAdminConfigured = users.some(u => u.designation === "Super Admin" && u.email);
-  const canSeeUsers = profile?.designation === "Super Admin" || !superAdminConfigured;
+  const superAdminConfigured = users.some(u => isSuperAdmin(u.designation) && u.email);
+  const canSeeUsers = isSuperAdmin(profile?.designation) || !superAdminConfigured;
 
   if (!loaded) {
     return <div className="min-h-screen flex items-center justify-center text-slate-400 text-sm">Loading BillTrack Pro…</div>;
