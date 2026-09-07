@@ -144,6 +144,17 @@ const rolesMatch = (a, b) => normalizeRole(a) === normalizeRole(b) && normalizeR
 // a closing remark and mark the bill Paid/closed directly.
 const isTerminalRole = (designation) => rolesMatch(designation, "Accounts");
 
+// Is this bill actually sitting with Accounts right now (not just "somewhere
+// in the workflow")? Used to gate the Accounts delay-warning notification so
+// it only fires for bills genuinely pending with them, not every open bill.
+function isCurrentlyWithAccounts(bill, users) {
+  if (bill.assignedTo) {
+    const person = users.find(u => u.id === bill.assignedTo);
+    return !!person && isTerminalRole(person.designation);
+  }
+  return isTerminalRole(currentHolder(bill));
+}
+
 // Can the currently logged-in profile Accept/Reject/Transfer this bill?
 // - Super Admin can always act (keeps things from getting stuck).
 // - If the bill is already assigned to a specific person, only that person can act.
@@ -437,8 +448,11 @@ function Sidebar({ open, onClose, active, setActive, canSeeUsers }) {
   );
 }
 
-function Header({ onMenu, notifCount, userEmail, onLogout }) {
+function Header({ onMenu, notifications, onOpenNotification, userEmail, onLogout }) {
   const initial = (userEmail || "U").charAt(0).toUpperCase();
+  const [notifOpen, setNotifOpen] = useState(false);
+  const count = notifications.length;
+
   return (
     <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
       <div className="flex items-center justify-between px-5 py-3.5">
@@ -450,10 +464,36 @@ function Header({ onMenu, notifCount, userEmail, onLogout }) {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <button className="relative text-slate-500">
-            <Bell size={20} />
-            {notifCount > 0 && <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] font-bold rounded-full h-4 w-4 flex items-center justify-center">{notifCount}</span>}
-          </button>
+          <div className="relative">
+            <button className="relative text-slate-500" onClick={() => setNotifOpen(o => !o)}>
+              <Bell size={20} />
+              {count > 0 && <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] font-bold rounded-full h-4 w-4 flex items-center justify-center">{count}</span>}
+            </button>
+            {notifOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setNotifOpen(false)} />
+                <div className="absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto bg-white rounded-2xl border border-slate-200 shadow-lg z-40">
+                  <div className="px-4 py-3 border-b border-slate-100 font-semibold text-sm" style={{ color: NAVY }}>Notifications</div>
+                  {notifications.length === 0 ? (
+                    <div className="px-4 py-6 text-center text-sm text-slate-400">Nothing needs your attention right now.</div>
+                  ) : (
+                    <div className="divide-y divide-slate-100">
+                      {notifications.map(n => (
+                        <button
+                          key={n.id}
+                          onClick={() => { onOpenNotification(n.billId); setNotifOpen(false); }}
+                          className="w-full text-left px-4 py-3 hover:bg-slate-50"
+                        >
+                          <div className="text-sm font-semibold" style={{ color: n.urgent ? RED : NAVY }}>{n.title}</div>
+                          <div className="text-xs text-slate-400 mt-0.5">{n.subtitle}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
           <div className="flex items-center gap-2.5">
             <div className="text-right hidden sm:block">
               <div className="text-sm font-semibold truncate max-w-[180px]" style={{ color: NAVY }}>{userEmail}</div>
@@ -1946,7 +1986,7 @@ export default function App({ user, onLogout }) {
           assignedTo: b.registeredBy,
           awaitingTransfer: false,
           assignmentChain: chain,
-          history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, remarks: `Declined by ${profile.name} (${profile.designation}) — returned to ${registrant ? `${registrant.name} (${registrant.designation})` : "the bill's original registrant"} for review.` }],
+          history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, kind: "declined_bounce", remarks: `Declined by ${profile.name} (${profile.designation}) — returned to ${registrant ? `${registrant.name} (${registrant.designation})` : "the bill's original registrant"} for review.` }],
         };
       }
 
@@ -1971,7 +2011,7 @@ export default function App({ user, onLogout }) {
         assignedTo: prevHolderId,
         awaitingTransfer: false,
         assignmentChain: chain,
-        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, remarks: `Rejected by ${profile.name} (${profile.designation}) — sent back to ${prevHolder ? `${prevHolder.name} (${prevHolder.designation})` : "the previous holder"} for review.` }],
+        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, kind: "rejected_bounce", remarks: `Rejected by ${profile.name} (${profile.designation}) — sent back to ${prevHolder ? `${prevHolder.name} (${prevHolder.designation})` : "the previous holder"} for review.` }],
       };
     }));
   }, [bills, persist, profile, users]);
@@ -2020,7 +2060,56 @@ export default function App({ user, onLogout }) {
     }));
   }, [bills, persist, profile]);
 
-  const notifCount = bills.filter(b => isOpenBill(b) && daysBetween(b.dateReceived, Date.now()) > 7).length;
+  const notifications = useMemo(() => {
+    if (!profile) return [];
+    const items = [];
+
+    // 1. Bills that bounced back to this person (rejected/declined by whoever
+    // they handed it to) and now need Accept/Reject from them again.
+    bills.forEach(b => {
+      if (!isOpenBill(b)) return;
+      if (!canActOnBill(b, profile)) return;
+      const last = b.history[b.history.length - 1];
+      if (!last || (last.kind !== "rejected_bounce" && last.kind !== "declined_bounce")) return;
+      const verb = last.kind === "declined_bounce" ? "Declined" : "Rejected";
+      items.push({
+        id: `action-${b.id}`,
+        billId: b.id,
+        urgent: true,
+        title: `${verb} by ${last.user} (${last.role}) — Action Required`,
+        subtitle: `${b.id} · ${b.contractor} · ${b.site}`,
+      });
+    });
+
+    // 2. Accounts-only early warning: bills approaching the 21-day delay
+    // threshold, shown starting 3 days out — regardless of who currently
+    // holds the bill, so Accounts can proactively follow up with whoever's
+    // sitting on it rather than only seeing bills already in their own queue.
+    if (isTerminalRole(profile.designation) || isSuperAdmin(profile.designation)) {
+      bills.forEach(b => {
+        if (!isOpenBill(b)) return;
+        const elapsed = daysBetween(b.billDate, Date.now());
+        const remaining = DELAY_THRESHOLD_DAYS - elapsed;
+        if (remaining > 0 && remaining <= 3) {
+          items.push({
+            id: `delay-${b.id}`,
+            billId: b.id,
+            urgent: false,
+            title: `Bill ${b.id} — ${remaining} day${remaining === 1 ? "" : "s"} remaining before delay threshold`,
+            subtitle: `${b.contractor} · ${b.site} · Currently with ${holderDisplay(b, users)} · Bill dated ${fmtDate(b.billDate)}`,
+          });
+        }
+      });
+    }
+
+    return items;
+  }, [bills, profile, users]);
+
+  const handleOpenNotification = useCallback((billId) => {
+    setActive("bills");
+    setOpenBillId(billId);
+  }, []);
+
   const openBill = bills.find(b => b.id === openBillId);
   // Bootstrap safety: if nobody has been set up as Super Admin yet (with a real
   // login email), the Users page stays open to whoever is logged in, so someone
@@ -2038,7 +2127,7 @@ export default function App({ user, onLogout }) {
     <div className="min-h-screen bg-slate-50 flex" style={{ fontFamily: "Inter, ui-sans-serif, system-ui" }}>
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} active={active} setActive={(id) => { setActive(id); setOpenBillId(null); }} canSeeUsers={canSeeUsers} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <Header onMenu={() => setSidebarOpen(true)} notifCount={notifCount} userEmail={user?.email} onLogout={onLogout} />
+        <Header onMenu={() => setSidebarOpen(true)} notifications={notifications} onOpenNotification={handleOpenNotification} userEmail={user?.email} onLogout={onLogout} />
         <main className="flex-1 p-4 sm:p-6 max-w-[1400px] w-full mx-auto">
           {active === "dashboard" && <Dashboard bills={bills} setActive={setActive} userEmail={user?.email} />}
           {active === "bills" && !openBill && (
