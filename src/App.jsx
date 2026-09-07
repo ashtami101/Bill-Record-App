@@ -160,6 +160,8 @@ function canActOnBill(bill, profile) {
 function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTransfer, onClose }) {
   const [transferTo, setTransferTo] = useState("");
   const [closeRemarks, setCloseRemarks] = useState("");
+  const [confirmingReject, setConfirmingReject] = useState(false);
+  const [rejectRemarks, setRejectRemarks] = useState("");
 
   if (!isOpenBill(bill) || !canActOnBill(bill, profile)) {
     return <span className="text-slate-300 text-sm">—</span>;
@@ -211,12 +213,51 @@ function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTran
     );
   }
 
+  // Whether rejecting right now would send the bill back to a previous
+  // holder (bounce-back — simple, no remark needed) or whether this person
+  // is the very first one who ever claimed it, in which case rejecting is
+  // final and needs a remark before the bill closes for good.
+  const chain = Array.isArray(bill.assignmentChain) ? bill.assignmentChain : (bill.assignedTo ? [bill.assignedTo] : []);
+  const wouldBeFinalReject = chain.length <= 1;
+
+  if (confirmingReject && wouldBeFinalReject) {
+    return (
+      <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
+        <input
+          value={rejectRemarks}
+          onChange={(e) => setRejectRemarks(e.target.value)}
+          placeholder="Remarks (required to reject & close)"
+          className="text-xs rounded-lg border border-slate-300 px-2 py-1.5 w-44"
+        />
+        <button
+          disabled={!rejectRemarks.trim()}
+          onClick={() => { if (rejectRemarks.trim()) { onReject(bill.id, rejectRemarks.trim()); setConfirmingReject(false); setRejectRemarks(""); } }}
+          className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white disabled:opacity-40 shrink-0"
+          style={{ backgroundColor: RED }}
+        >
+          Reject &amp; Close
+        </button>
+        <button onClick={() => { setConfirmingReject(false); setRejectRemarks(""); }} className="text-xs text-slate-400 hover:text-slate-600 shrink-0">
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
       <button onClick={() => onAccept(bill.id)} className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white" style={{ backgroundColor: "#16A34A" }}>
         Accept
       </button>
-      <button onClick={() => onReject(bill.id)} className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white" style={{ backgroundColor: RED }}>
+      <button
+        onClick={() => {
+          if (wouldBeFinalReject) {
+            setConfirmingReject(true);
+          } else if (window.confirm("Reject this bill? It will be sent back to the previous holder for review.")) {
+            onReject(bill.id);
+          }
+        }}
+        className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white" style={{ backgroundColor: RED }}>
         Reject
       </button>
     </div>
@@ -276,7 +317,7 @@ function seedBills() {
         txn: "TXN" + (900000 + i), voucher: "VCH-" + (2000 + i), mode: "NEFT", bankDetails: "HDFC Bank - 00231",
         remarks: "Payment released.",
       } : null,
-      assignedTo: null, awaitingTransfer: false,
+      assignedTo: null, awaitingTransfer: false, assignmentChain: [],
     };
   });
 }
@@ -956,6 +997,15 @@ const REPORT_TABS = [
 
 function Reports({ bills, users }) {
   const [tab, setTab] = useState("register");
+  const [projectFilter, setProjectFilter] = useState("All");
+
+  const projectOptions = useMemo(() => {
+    const names = Array.from(new Set(bills.map(b => b.site).filter(Boolean))).sort();
+    return ["All", ...names];
+  }, [bills]);
+
+  const filteredBills = projectFilter === "All" ? bills : bills.filter(b => b.site === projectFilter);
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -963,9 +1013,14 @@ function Reports({ bills, users }) {
           <h1 className="text-2xl font-bold" style={{ color: NAVY }}>Reports</h1>
           <p className="text-sm text-slate-500">Generate and export detailed reports</p>
         </div>
-        <button onClick={() => window.print()} className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-600 hover:bg-slate-50">
-          <FileText size={15} /> Print / PDF
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)} className={inputCls + " sm:w-56"}>
+            {projectOptions.map(p => <option key={p} value={p}>{p === "All" ? "All Projects" : p}</option>)}
+          </select>
+          <button onClick={() => window.print()} className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 text-sm font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap">
+            <FileText size={15} /> Print / PDF
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -981,15 +1036,15 @@ function Reports({ bills, users }) {
         })}
       </div>
 
-      {tab === "register" && <BillRegisterReport bills={bills} users={users} />}
-      {tab === "pending" && <PendingBillReport bills={bills} users={users} />}
-      {tab === "ageing" && <AgeingReport bills={bills} />}
-      {tab === "site" && <GroupedReport bills={bills} groupKey="site" title="Site-Wise Report" icon={Building2} />}
-      {tab === "contractor" && <GroupedReport bills={bills} groupKey="contractor" title="Contractor-Wise Report" icon={Truck} />}
-      {tab === "monthly" && <MonthlyReport bills={bills} />}
-      {tab === "payment" && <PaymentReport bills={bills} />}
-      {tab === "delay" && <DelayReport bills={bills} />}
-      {tab === "activity" && <ActivityReport bills={bills} />}
+      {tab === "register" && <BillRegisterReport bills={filteredBills} users={users} />}
+      {tab === "pending" && <PendingBillReport bills={filteredBills} users={users} />}
+      {tab === "ageing" && <AgeingReport bills={filteredBills} />}
+      {tab === "site" && <GroupedReport bills={filteredBills} groupKey="site" title="Site-Wise Report" icon={Building2} />}
+      {tab === "contractor" && <GroupedReport bills={filteredBills} groupKey="contractor" title="Contractor-Wise Report" icon={Truck} />}
+      {tab === "monthly" && <MonthlyReport bills={filteredBills} />}
+      {tab === "payment" && <PaymentReport bills={filteredBills} />}
+      {tab === "delay" && <DelayReport bills={filteredBills} />}
+      {tab === "activity" && <ActivityReport bills={filteredBills} />}
     </div>
   );
 }
@@ -1025,10 +1080,34 @@ function Table({ cols, rows }) {
   );
 }
 
+// Delay is measured from the Bill Date (the date on the contractor's bill),
+// not from when it was received at site — that's the whole point of tracking
+// delay, since "received" can lag behind the actual bill date. 21 days is the
+// allowed turnaround; past that, every extra day counts as delay.
+const DELAY_THRESHOLD_DAYS = 21;
+function billDelayInfo(bill) {
+  if (!isOpenBill(bill)) return null;
+  const elapsed = daysBetween(bill.billDate, Date.now());
+  if (elapsed > DELAY_THRESHOLD_DAYS) {
+    const over = elapsed - DELAY_THRESHOLD_DAYS;
+    return { over: true, label: `${over} day${over === 1 ? "" : "s"} delay` };
+  }
+  return { over: false, label: "On Track" };
+}
+
 function BillRegisterReport({ bills, users }) {
-  const cols = ["Bill ID", "Contractor", "Site", "Type", "Bill Date", "Amount", "Status", "Holder", "Pending"];
-  const rows = bills.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), fmtINR(b.netAmount), <Badge key={b.id} status={b.status} />, holderDisplay(b, users), isOpenBill(b) ? daysBetween(b.dateReceived, Date.now()) + "d" : "—"]);
-  return <ReportShell title="Bill Register Report" count={bills.length} onExport={() => downloadCsv("bill-register.csv", cols, bills.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, holderDisplay(b, users), daysBetween(b.dateReceived, Date.now())]))}>
+  const cols = ["Bill ID", "Contractor", "Site", "Type", "Bill Date", "Amount", "Status", "Holder", "Delay Days"];
+  const rows = bills.map(b => {
+    const d = billDelayInfo(b);
+    const delayCell = !d ? <span className="text-slate-300">—</span> : (
+      <span className={`font-semibold ${d.over ? "text-red-600" : "text-green-600"}`}>{d.label}</span>
+    );
+    return [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), fmtINR(b.netAmount), <Badge key={b.id} status={b.status} />, holderDisplay(b, users), delayCell];
+  });
+  return <ReportShell title="Bill Register Report" count={bills.length} onExport={() => downloadCsv("bill-register.csv", cols, bills.map(b => {
+    const d = billDelayInfo(b);
+    return [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, holderDisplay(b, users), d ? d.label : "-"];
+  }))}>
     <Table cols={cols} rows={rows} />
   </ReportShell>;
 }
@@ -1768,7 +1847,7 @@ export default function App({ user, onLogout }) {
       netAmount: form.netAmount, dateReceived: now, submittedBy: form.submittedBy || "Site Billing Engineer",
       remarks: form.remarks, documents: [], status: "Received at Site",
       history: [{ user: form.submittedBy || "Site Billing Engineer", role: "Site Billing Engineer", date: now, prevStatus: null, newStatus: "Received at Site", remarks: "Bill registered at site." }],
-      payment: null, assignedTo: null, awaitingTransfer: false,
+      payment: null, assignedTo: null, awaitingTransfer: false, assignmentChain: [],
     };
     persist([bill, ...bills]);
     setOpenBillId(id);
@@ -1807,29 +1886,53 @@ export default function App({ user, onLogout }) {
     const now = Date.now();
     persist(bills.map(b => {
       if (b.id !== billId) return b;
+      const chain = Array.isArray(b.assignmentChain) ? [...b.assignmentChain] : (b.assignedTo ? [b.assignedTo] : []);
+      if (chain[chain.length - 1] !== profile.id) chain.push(profile.id);
       return {
         ...b,
         assignedTo: profile.id,
         awaitingTransfer: true,
+        assignmentChain: chain,
         history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, remarks: `Accepted by ${profile.name} (${profile.designation}).` }],
       };
     }));
   }, [bills, persist, profile]);
 
-  const handleRejectBill = useCallback((billId) => {
+  // Rejecting sends the bill back to whoever handed it to this person (the
+  // previous holder in the chain), so THEY get Accept/Reject again — it
+  // isn't instantly terminal. Only when the very first person who ever
+  // claimed the bill also rejects it (nobody left before them in the chain)
+  // does it require a remark and close for good.
+  const handleRejectBill = useCallback((billId, remarks) => {
     if (!profile) return;
-    if (!window.confirm("Reject this bill? This marks it as Rejected and cannot be undone from here.")) return;
     const now = Date.now();
     persist(bills.map(b => {
       if (b.id !== billId) return b;
+      const chain = Array.isArray(b.assignmentChain) ? [...b.assignmentChain] : (b.assignedTo ? [b.assignedTo] : []);
+      if (chain.length && chain[chain.length - 1] === profile.id) chain.pop();
+      else if (chain.length) chain.pop();
+
+      if (chain.length === 0) {
+        return {
+          ...b,
+          status: "Rejected",
+          assignedTo: null,
+          awaitingTransfer: false,
+          assignmentChain: [],
+          history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: "Rejected", remarks: remarks || `Rejected by ${profile.name} (${profile.designation}). Final rejection — no prior holder to return to.` }],
+        };
+      }
+      const prevHolderId = chain[chain.length - 1];
+      const prevHolder = users.find(u => u.id === prevHolderId);
       return {
         ...b,
-        status: "Rejected",
+        assignedTo: prevHolderId,
         awaitingTransfer: false,
-        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: "Rejected", remarks: `Rejected by ${profile.name} (${profile.designation}).` }],
+        assignmentChain: chain,
+        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, remarks: `Rejected by ${profile.name} (${profile.designation}) — sent back to ${prevHolder ? `${prevHolder.name} (${prevHolder.designation})` : "the previous holder"} for review.` }],
       };
     }));
-  }, [bills, persist, profile]);
+  }, [bills, persist, profile, users]);
 
   const handleTransferBill = useCallback((billId, targetUserId) => {
     if (!profile) return;
@@ -1838,10 +1941,13 @@ export default function App({ user, onLogout }) {
     const now = Date.now();
     persist(bills.map(b => {
       if (b.id !== billId) return b;
+      const chain = Array.isArray(b.assignmentChain) ? [...b.assignmentChain] : (b.assignedTo ? [b.assignedTo] : []);
+      chain.push(target.id);
       return {
         ...b,
         assignedTo: target.id,
         awaitingTransfer: false,
+        assignmentChain: chain,
         history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, remarks: `Transferred to ${target.name} (${target.designation}) by ${profile.name}.` }],
       };
     }));
