@@ -116,6 +116,19 @@ function currentHolder(bill) {
   return EXCEPTION_HOLDER[bill.status] || HOLDER_OF[bill.status] || "-";
 }
 
+// What should the "Holder" column actually show? If the bill has been
+// claimed/transferred to a specific person, show THAT person's name — not
+// just the generic workflow-stage role, which never changes just because the
+// bill got handed to someone. Falls back to the role-based text for bills
+// nobody has personally claimed yet.
+function holderDisplay(bill, users) {
+  if (bill.assignedTo) {
+    const person = (users || []).find(u => u.id === bill.assignedTo);
+    if (person) return `${person.name} (${person.designation})`;
+  }
+  return currentHolder(bill);
+}
+
 function isOpenBill(bill) {
   return bill.status !== "Paid" && bill.status !== "Rejected";
 }
@@ -236,6 +249,7 @@ function seedBills() {
         txn: "TXN" + (900000 + i), voucher: "VCH-" + (2000 + i), mode: "NEFT", bankDetails: "HDFC Bank - 00231",
         remarks: "Payment released.",
       } : null,
+      assignedTo: null, awaitingTransfer: false,
     };
   });
 }
@@ -495,7 +509,7 @@ function AllBills({ bills, onOpen, setActive, onDelete, profile, users, onAccept
 
   const exportCsv = () => {
     const header = ["Bill ID", "Contractor", "Site", "Bill Type", "Bill Date", "Net Amount", "Status", "Current Holder", "Days Pending"];
-    const rows = filtered.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, currentHolder(b), daysBetween(b.dateReceived, Date.now())]);
+    const rows = filtered.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, holderDisplay(b, users), daysBetween(b.dateReceived, Date.now())]);
     downloadCsv("all-bills.csv", header, rows);
   };
 
@@ -573,7 +587,7 @@ function AllBills({ bills, onOpen, setActive, onDelete, profile, users, onAccept
                       </td>
                       <td className="px-5 py-3 font-semibold" style={{ color: NAVY }}>{fmtINR(b.netAmount)}</td>
                       <td className="px-5 py-3"><Badge status={b.status} /></td>
-                      <td className="px-5 py-3 text-slate-500">{currentHolder(b)}</td>
+                      <td className="px-5 py-3 text-slate-500">{holderDisplay(b, users)}</td>
                       <td className="px-5 py-3">
                         {isOpenBill(b) ? <span className={`font-semibold ${days > 15 ? "text-red-600" : days > 7 ? "text-amber-600" : "text-slate-600"}`}>{days}d</span> : <span className="text-slate-300">—</span>}
                       </td>
@@ -788,7 +802,7 @@ function BillDetail({ bill, onBack, onTransition, onDelete, profile, users, onAc
       </div>
 
       <div className="grid sm:grid-cols-4 gap-4">
-        <StatCard icon={UserIcon} label="Current Holder" value={currentHolder(bill)} color={TEAL} />
+        <StatCard icon={UserIcon} label="Current Holder" value={holderDisplay(bill, users)} color={TEAL} />
         <StatCard icon={Clock} label="Days Pending" value={isOpenBill(bill) ? `${days}d` : "—"} sub={isOpenBill(bill) ? `${bdays} business days` : "Closed"} color={days > 15 ? RED : AMBER} />
         <StatCard icon={IndianRupee} label="Net Payable" value={fmtINR(bill.netAmount)} color={NAVY} />
         <StatCard icon={FileText} label="Bill Type" value={bill.billType} color="#2563EB" />
@@ -913,7 +927,7 @@ const REPORT_TABS = [
   { id: "activity", label: "User Activity Report", icon: Users },
 ];
 
-function Reports({ bills }) {
+function Reports({ bills, users }) {
   const [tab, setTab] = useState("register");
   return (
     <div className="space-y-5">
@@ -940,8 +954,8 @@ function Reports({ bills }) {
         })}
       </div>
 
-      {tab === "register" && <BillRegisterReport bills={bills} />}
-      {tab === "pending" && <PendingBillReport bills={bills} />}
+      {tab === "register" && <BillRegisterReport bills={bills} users={users} />}
+      {tab === "pending" && <PendingBillReport bills={bills} users={users} />}
       {tab === "ageing" && <AgeingReport bills={bills} />}
       {tab === "site" && <GroupedReport bills={bills} groupKey="site" title="Site-Wise Report" icon={Building2} />}
       {tab === "contractor" && <GroupedReport bills={bills} groupKey="contractor" title="Contractor-Wise Report" icon={Truck} />}
@@ -984,22 +998,22 @@ function Table({ cols, rows }) {
   );
 }
 
-function BillRegisterReport({ bills }) {
+function BillRegisterReport({ bills, users }) {
   const cols = ["Bill ID", "Contractor", "Site", "Type", "Bill Date", "Amount", "Status", "Holder", "Pending"];
-  const rows = bills.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), fmtINR(b.netAmount), <Badge key={b.id} status={b.status} />, currentHolder(b), isOpenBill(b) ? daysBetween(b.dateReceived, Date.now()) + "d" : "—"]);
-  return <ReportShell title="Bill Register Report" count={bills.length} onExport={() => downloadCsv("bill-register.csv", cols, bills.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, currentHolder(b), daysBetween(b.dateReceived, Date.now())]))}>
+  const rows = bills.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), fmtINR(b.netAmount), <Badge key={b.id} status={b.status} />, holderDisplay(b, users), isOpenBill(b) ? daysBetween(b.dateReceived, Date.now()) + "d" : "—"]);
+  return <ReportShell title="Bill Register Report" count={bills.length} onExport={() => downloadCsv("bill-register.csv", cols, bills.map(b => [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, holderDisplay(b, users), daysBetween(b.dateReceived, Date.now())]))}>
     <Table cols={cols} rows={rows} />
   </ReportShell>;
 }
 
-function PendingBillReport({ bills }) {
+function PendingBillReport({ bills, users }) {
   const pending = bills.filter(isOpenBill);
   const cols = ["Bill ID", "Contractor", "Site", "Stage", "Holder", "Amount", "Received", "Pending Days"];
   const rows = pending.map(b => {
     const d = daysBetween(b.dateReceived, Date.now());
-    return [b.id, b.contractor, b.site, b.status, currentHolder(b), fmtINR(b.netAmount), fmtDate(b.dateReceived), <span key={b.id} className={d > 15 ? "text-red-600 font-semibold" : d > 7 ? "text-amber-600 font-semibold" : ""}>{d}d</span>];
+    return [b.id, b.contractor, b.site, b.status, holderDisplay(b, users), fmtINR(b.netAmount), fmtDate(b.dateReceived), <span key={b.id} className={d > 15 ? "text-red-600 font-semibold" : d > 7 ? "text-amber-600 font-semibold" : ""}>{d}d</span>];
   });
-  return <ReportShell title="Pending Bill Report" count={pending.length} onExport={() => downloadCsv("pending-bills.csv", cols, pending.map(b => [b.id, b.contractor, b.site, b.status, currentHolder(b), b.netAmount, fmtDate(b.dateReceived), daysBetween(b.dateReceived, Date.now())]))}>
+  return <ReportShell title="Pending Bill Report" count={pending.length} onExport={() => downloadCsv("pending-bills.csv", cols, pending.map(b => [b.id, b.contractor, b.site, b.status, holderDisplay(b, users), b.netAmount, fmtDate(b.dateReceived), daysBetween(b.dateReceived, Date.now())]))}>
     <Table cols={cols} rows={rows} />
   </ReportShell>;
 }
@@ -1149,7 +1163,7 @@ function ActivityReport({ bills }) {
 
 /* --------------------------- Management Dashboard ------------------------ */
 
-function ManagementDashboard({ bills }) {
+function ManagementDashboard({ bills, users }) {
   const total = bills.length;
   const pending = bills.filter(isOpenBill);
   const approved = bills.filter(b => ["Approved", "Sent to Accounts", "Payment Processing", "Paid"].includes(b.status));
@@ -1268,26 +1282,13 @@ function ManagementDashboard({ bills }) {
 
       <SectionCard title="Top 10 Oldest Pending Bills" icon={AlertTriangle}>
         <Table cols={["Bill ID", "Contractor", "Site", "Holder", "Amount", "Days Pending"]}
-          rows={oldest.map(b => [b.id, b.contractor, b.site, currentHolder(b), fmtINR(b.netAmount), <span key={b.id} className="text-red-600 font-semibold">{daysBetween(b.dateReceived, Date.now())}d</span>])} />
+          rows={oldest.map(b => [b.id, b.contractor, b.site, holderDisplay(b, users), fmtINR(b.netAmount), <span key={b.id} className="text-red-600 font-semibold">{daysBetween(b.dateReceived, Date.now())}d</span>])} />
       </SectionCard>
     </div>
   );
 }
 
-/* ------------------------------ Simple pages ---------------------------- */
-
-function SimpleListPage({ title, sub, items, icon: Icon }) {
-  return (
-    <div className="space-y-5">
-      <div><h1 className="text-2xl font-bold" style={{ color: NAVY }}>{title}</h1><p className="text-sm text-slate-500">{sub}</p></div>
-      <SectionCard title={title} icon={Icon}>
-        <ul className="divide-y divide-slate-100">
-          {items.map(it => <li key={it} className="py-3 text-sm text-slate-700 flex items-center gap-2"><Icon size={15} className="text-slate-400" />{it}</li>)}
-        </ul>
-      </SectionCard>
-    </div>
-  );
-}
+/* ------------------------------ Managed pages ---------------------------- */
 
 function ManagedListPage({ title, sub, items, icon: Icon, onAdd, onDelete, placeholder, singular }) {
   const [newItem, setNewItem] = useState("");
@@ -1528,6 +1529,19 @@ function UsersManager({ users, onAdd, onDelete, onSendReset, currentUserEmail, s
   );
 }
 
+function SimpleListPage({ title, sub, items, icon: Icon }) {
+  return (
+    <div className="space-y-5">
+      <div><h1 className="text-2xl font-bold" style={{ color: NAVY }}>{title}</h1><p className="text-sm text-slate-500">{sub}</p></div>
+      <SectionCard title={title} icon={Icon}>
+        <ul className="divide-y divide-slate-100">
+          {items.map(it => <li key={it} className="py-3 text-sm text-slate-700 flex items-center gap-2"><Icon size={15} className="text-slate-400" />{it}</li>)}
+        </ul>
+      </SectionCard>
+    </div>
+  );
+}
+
 function GuidePage() {
   const steps = [
     ["Contractor submits bill", "Physical/digital bill handed to the Site Billing Engineer."],
@@ -1566,11 +1580,8 @@ export default function App({ user, onLogout }) {
   const [openBillId, setOpenBillId] = useState(null);
   const [loaded, setLoaded] = useState(false);
 
-  // Bills, Projects, and Contractors are shared company-wide data: every
-  // signed-in user reads/writes the same records (shared=true), rather than
-  // a private copy each. Projects/Contractors are only seeded with the
-  // defaults the first time the app ever runs — after that, whatever's in
-  // Supabase wins, and adding/removing from the app updates Supabase directly.
+  // Bills, Projects, Contractors, and Users are shared company-wide data:
+  // every signed-in user reads/writes the same records (shared=true).
   useEffect(() => {
     (async () => {
       try {
@@ -1843,8 +1854,8 @@ export default function App({ user, onLogout }) {
             />
           )}
           {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} contractors={contractors} sites={projects} />}
-          {active === "reports" && <Reports bills={bills} />}
-          {active === "management" && <ManagementDashboard bills={bills} />}
+          {active === "reports" && <Reports bills={bills} users={users} />}
+          {active === "management" && <ManagementDashboard bills={bills} users={users} />}
           {active === "users" && canSeeUsers && <UsersManager users={users} onAdd={addUser} onDelete={deleteUser} onSendReset={sendPasswordReset} currentUserEmail={user?.email} superAdminConfigured={superAdminConfigured} />}
           {active === "users" && !canSeeUsers && (
             <div className="text-sm text-slate-500">You don't have access to this page.</div>
