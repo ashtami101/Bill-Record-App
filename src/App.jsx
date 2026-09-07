@@ -157,6 +157,26 @@ function canActOnBill(bill, profile) {
   return rolesMatch(profile.designation, currentHolder(bill));
 }
 
+// Only the person who originally registered a bill (via "Register New Bill")
+// is allowed to give it the final Reject — everyone else in the chain can
+// only bounce it back to whoever handed it to them. Super Admin can always
+// finalize, same override as everywhere else. Bills that predate this feature
+// (no registeredBy on file) fall back to "whoever is alone at the bottom of
+// the chain" so old data doesn't get stuck.
+function wouldBeFinalReject(bill, profile) {
+  if (isSuperAdmin(profile?.designation)) {
+    const chain = Array.isArray(bill.assignmentChain) ? bill.assignmentChain : (bill.assignedTo ? [bill.assignedTo] : []);
+    return chain.length <= 1;
+  }
+  if (bill.registeredBy) {
+    if (profile.id !== bill.registeredBy) return false;
+    const chain = Array.isArray(bill.assignmentChain) ? bill.assignmentChain : (bill.assignedTo ? [bill.assignedTo] : []);
+    return chain.length <= 1;
+  }
+  const chain = Array.isArray(bill.assignmentChain) ? bill.assignmentChain : (bill.assignedTo ? [bill.assignedTo] : []);
+  return chain.length <= 1;
+}
+
 function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTransfer, onClose }) {
   const [transferTo, setTransferTo] = useState("");
   const [closeRemarks, setCloseRemarks] = useState("");
@@ -214,13 +234,12 @@ function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTran
   }
 
   // Whether rejecting right now would send the bill back to a previous
-  // holder (bounce-back — simple, no remark needed) or whether this person
-  // is the very first one who ever claimed it, in which case rejecting is
-  // final and needs a remark before the bill closes for good.
-  const chain = Array.isArray(bill.assignmentChain) ? bill.assignmentChain : (bill.assignedTo ? [bill.assignedTo] : []);
-  const wouldBeFinalReject = chain.length <= 1;
+  // holder (bounce-back — simple, no remark needed) or whether this is the
+  // bill's original registrant with nobody left before them, in which case
+  // rejecting is final and needs a remark before the bill closes for good.
+  const isFinalReject = wouldBeFinalReject(bill, profile);
 
-  if (confirmingReject && wouldBeFinalReject) {
+  if (confirmingReject && isFinalReject) {
     return (
       <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
         <input
@@ -251,7 +270,7 @@ function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTran
       </button>
       <button
         onClick={() => {
-          if (wouldBeFinalReject) {
+          if (isFinalReject) {
             setConfirmingReject(true);
           } else if (window.confirm("Reject this bill? It will be sent back to the previous holder for review.")) {
             onReject(bill.id);
@@ -1835,10 +1854,20 @@ export default function App({ user, onLogout }) {
     }
   }, []);
 
+  // Resolve which Users-page entry (if any) matches the logged-in email —
+  // this is what tells the app someone's name/designation/permissions.
+  // Declared here (before handleCreate/handleAcceptBill/etc. below) because
+  // those all reference it in their own dependency arrays.
+  const profile = useMemo(() => {
+    if (!user?.email) return null;
+    return users.find(u => u.email && u.email.toLowerCase() === user.email.toLowerCase()) || null;
+  }, [users, user]);
+
   const handleCreate = useCallback((form) => {
     const nextSeq = bills.length + 1;
     const id = makeBillId(nextSeq);
     const now = Date.now();
+    const registeredBy = profile?.id || null;
     const bill = {
       id, contractor: form.contractor, site: form.site, building: form.building,
       workOrder: form.workOrder, po: form.po, contractorBillNo: form.contractorBillNo,
@@ -1847,12 +1876,16 @@ export default function App({ user, onLogout }) {
       netAmount: form.netAmount, dateReceived: now, submittedBy: form.submittedBy || "Site Billing Engineer",
       remarks: form.remarks, documents: [], status: "Received at Site",
       history: [{ user: form.submittedBy || "Site Billing Engineer", role: "Site Billing Engineer", date: now, prevStatus: null, newStatus: "Received at Site", remarks: "Bill registered at site." }],
-      payment: null, assignedTo: null, awaitingTransfer: false, assignmentChain: [],
+      payment: null, assignedTo: null, awaitingTransfer: false,
+      registeredBy,
+      // Seed the chain with whoever registered this bill — this is what
+      // guarantees only they can ever give it a final, no-appeal reject.
+      assignmentChain: registeredBy ? [registeredBy] : [],
     };
     persist([bill, ...bills]);
     setOpenBillId(id);
     setActive("bills");
-  }, [bills, persist]);
+  }, [bills, persist, profile]);
 
   const handleTransition = useCallback((billId, toStatus, remarks) => {
     const now = Date.now();
@@ -1874,13 +1907,6 @@ export default function App({ user, onLogout }) {
     persist(bills.filter(b => b.id !== billId));
   }, [bills, persist]);
 
-  // Resolve which Users-page entry (if any) matches the logged-in email —
-  // this is what tells the app someone's name/designation/permissions.
-  const profile = useMemo(() => {
-    if (!user?.email) return null;
-    return users.find(u => u.email && u.email.toLowerCase() === user.email.toLowerCase()) || null;
-  }, [users, user]);
-
   const handleAcceptBill = useCallback((billId) => {
     if (!profile) return;
     const now = Date.now();
@@ -1900,14 +1926,30 @@ export default function App({ user, onLogout }) {
 
   // Rejecting sends the bill back to whoever handed it to this person (the
   // previous holder in the chain), so THEY get Accept/Reject again — it
-  // isn't instantly terminal. Only when the very first person who ever
-  // claimed the bill also rejects it (nobody left before them in the chain)
-  // does it require a remark and close for good.
+  // isn't instantly terminal. Only the bill's original registrant (whoever
+  // used "Register New Bill") can ever give it a final, no-appeal reject —
+  // see wouldBeFinalReject() above for exactly how that's decided.
   const handleRejectBill = useCallback((billId, remarks) => {
     if (!profile) return;
     const now = Date.now();
     persist(bills.map(b => {
       if (b.id !== billId) return b;
+
+      // Bill was never actually claimed (nobody accepted it yet), and the
+      // person declining it isn't the one who registered it — they have no
+      // authority to finalize anything, so just route it to the registrant.
+      if (!b.assignedTo && b.registeredBy && profile.id !== b.registeredBy && !isSuperAdmin(profile.designation)) {
+        const registrant = users.find(u => u.id === b.registeredBy);
+        const chain = Array.isArray(b.assignmentChain) && b.assignmentChain.length ? b.assignmentChain : [b.registeredBy];
+        return {
+          ...b,
+          assignedTo: b.registeredBy,
+          awaitingTransfer: false,
+          assignmentChain: chain,
+          history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, remarks: `Declined by ${profile.name} (${profile.designation}) — returned to ${registrant ? `${registrant.name} (${registrant.designation})` : "the bill's original registrant"} for review.` }],
+        };
+      }
+
       const chain = Array.isArray(b.assignmentChain) ? [...b.assignmentChain] : (b.assignedTo ? [b.assignedTo] : []);
       if (chain.length && chain[chain.length - 1] === profile.id) chain.pop();
       else if (chain.length) chain.pop();
