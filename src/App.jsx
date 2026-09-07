@@ -139,6 +139,10 @@ function isOpenBill(bill) {
 const normalizeRole = (s) => (s || "").trim().toLowerCase();
 const isSuperAdmin = (designation) => normalizeRole(designation) === "super admin";
 const rolesMatch = (a, b) => normalizeRole(a) === normalizeRole(b) && normalizeRole(a) !== "";
+// "Accounts" is the last stop in the workflow — once someone in Accounts
+// accepts a bill, there's nobody further to transfer it to. Instead they add
+// a closing remark and mark the bill Paid/closed directly.
+const isTerminalRole = (designation) => rolesMatch(designation, "Accounts");
 
 // Can the currently logged-in profile Accept/Reject/Transfer this bill?
 // - Super Admin can always act (keeps things from getting stuck).
@@ -153,14 +157,37 @@ function canActOnBill(bill, profile) {
   return rolesMatch(profile.designation, currentHolder(bill));
 }
 
-function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTransfer }) {
+function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTransfer, onClose }) {
   const [transferTo, setTransferTo] = useState("");
+  const [closeRemarks, setCloseRemarks] = useState("");
 
   if (!isOpenBill(bill) || !canActOnBill(bill, profile)) {
     return <span className="text-slate-300 text-sm">—</span>;
   }
 
   if (bill.awaitingTransfer) {
+    // Whoever currently holds the bill (the person who just Accepted) is in
+    // Accounts — nobody left to transfer to, so they close it out instead.
+    if (isTerminalRole(profile.designation)) {
+      return (
+        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <input
+            value={closeRemarks}
+            onChange={(e) => setCloseRemarks(e.target.value)}
+            placeholder="Remarks (required to close)"
+            className="text-xs rounded-lg border border-slate-300 px-2 py-1.5 w-40"
+          />
+          <button
+            disabled={!closeRemarks.trim()}
+            onClick={() => { if (closeRemarks.trim()) { onClose(bill.id, closeRemarks.trim()); setCloseRemarks(""); } }}
+            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white disabled:opacity-40 shrink-0"
+            style={{ backgroundColor: "#16A34A" }}
+          >
+            Close Bill
+          </button>
+        </div>
+      );
+    }
     const otherUsers = users.filter(u => u.id !== profile.id);
     return (
       <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
@@ -495,7 +522,7 @@ function BillMiniList({ bills }) {
 
 /* ------------------------------ All Bills ------------------------------ */
 
-function AllBills({ bills, onOpen, setActive, onDelete, profile, users, onAccept, onReject, onTransfer }) {
+function AllBills({ bills, onOpen, setActive, onDelete, profile, users, onAccept, onReject, onTransfer, onClose }) {
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [showFilters, setShowFilters] = useState(false);
@@ -592,7 +619,7 @@ function AllBills({ bills, onOpen, setActive, onDelete, profile, users, onAccept
                         {isOpenBill(b) ? <span className={`font-semibold ${days > 15 ? "text-red-600" : days > 7 ? "text-amber-600" : "text-slate-600"}`}>{days}d</span> : <span className="text-slate-300">—</span>}
                       </td>
                       <td className="px-5 py-3">
-                        <BillAssignmentAction bill={b} profile={profile} users={users} onAccept={onAccept} onReject={onReject} onTransfer={onTransfer} />
+                        <BillAssignmentAction bill={b} profile={profile} users={users} onAccept={onAccept} onReject={onReject} onTransfer={onTransfer} onClose={onClose} />
                       </td>
                       <td className="px-5 py-3 text-right">
                         <button
@@ -750,7 +777,7 @@ const ACTIONS_BY_STATUS = {
   "Payment Hold": [{ label: "Resume Processing", to: "Payment Processing" }],
 };
 
-function BillDetail({ bill, onBack, onTransition, onDelete, profile, users, onAccept, onReject, onTransfer }) {
+function BillDetail({ bill, onBack, onTransition, onDelete, profile, users, onAccept, onReject, onTransfer, onClose }) {
   const [remarks, setRemarks] = useState("");
   const [pendingAction, setPendingAction] = useState(null);
   const days = daysBetween(bill.dateReceived, Date.now());
@@ -813,12 +840,12 @@ function BillDetail({ bill, onBack, onTransition, onDelete, profile, users, onAc
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm text-slate-600">
               {bill.assignedTo ? (
-                <>Currently with <span className="font-semibold" style={{ color: NAVY }}>{users.find(u => u.id === bill.assignedTo)?.name || "Unknown user"}</span> ({users.find(u => u.id === bill.assignedTo)?.designation || currentHolder(bill)}){bill.awaitingTransfer && <span className="text-amber-600"> — accepted, choosing who to transfer to</span>}</>
+                <>Currently with <span className="font-semibold" style={{ color: NAVY }}>{users.find(u => u.id === bill.assignedTo)?.name || "Unknown user"}</span> ({users.find(u => u.id === bill.assignedTo)?.designation || currentHolder(bill)}){bill.awaitingTransfer && <span className="text-amber-600"> — accepted, {isTerminalRole(users.find(u => u.id === bill.assignedTo)?.designation) ? "add a closing remark to finish" : "choosing who to transfer to"}</span>}</>
               ) : (
                 <>Not yet claimed — waiting on a <span className="font-semibold" style={{ color: NAVY }}>{currentHolder(bill)}</span> to accept it</>
               )}
             </div>
-            <BillAssignmentAction bill={bill} profile={profile} users={users} onAccept={onAccept} onReject={onReject} onTransfer={onTransfer} />
+            <BillAssignmentAction bill={bill} profile={profile} users={users} onAccept={onAccept} onReject={onReject} onTransfer={onTransfer} onClose={onClose} />
           </div>
         </SectionCard>
       )}
@@ -1820,6 +1847,31 @@ export default function App({ user, onLogout }) {
     }));
   }, [bills, persist, profile, users]);
 
+  // Accounts is the end of the line — after they Accept, there's no one left
+  // to transfer to. Closing requires a remark, and finalizes the bill as Paid.
+  const handleCloseBill = useCallback((billId, remarks) => {
+    if (!profile) return;
+    const now = Date.now();
+    persist(bills.map(b => {
+      if (b.id !== billId) return b;
+      const payment = {
+        date: now, amount: b.netAmount,
+        utr: "UTR" + Math.floor(Math.random() * 900000 + 100000),
+        txn: "TXN" + Math.floor(Math.random() * 900000),
+        voucher: "VCH-" + Math.floor(Math.random() * 9000 + 1000),
+        mode: "NEFT", bankDetails: "HDFC Bank - 00231",
+        remarks,
+      };
+      return {
+        ...b,
+        status: "Paid",
+        awaitingTransfer: false,
+        payment,
+        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: "Paid", remarks }],
+      };
+    }));
+  }, [bills, persist, profile]);
+
   const notifCount = bills.filter(b => isOpenBill(b) && daysBetween(b.dateReceived, Date.now()) > 7).length;
   const openBill = bills.find(b => b.id === openBillId);
   // Bootstrap safety: if nobody has been set up as Super Admin yet (with a real
@@ -1844,13 +1896,13 @@ export default function App({ user, onLogout }) {
           {active === "bills" && !openBill && (
             <AllBills
               bills={bills} onOpen={setOpenBillId} setActive={setActive} onDelete={handleDeleteBill}
-              profile={profile} users={users} onAccept={handleAcceptBill} onReject={handleRejectBill} onTransfer={handleTransferBill}
+              profile={profile} users={users} onAccept={handleAcceptBill} onReject={handleRejectBill} onTransfer={handleTransferBill} onClose={handleCloseBill}
             />
           )}
           {active === "bills" && openBill && (
             <BillDetail
               bill={openBill} onBack={() => setOpenBillId(null)} onTransition={handleTransition} onDelete={handleDeleteBill}
-              profile={profile} users={users} onAccept={handleAcceptBill} onReject={handleRejectBill} onTransfer={handleTransferBill}
+              profile={profile} users={users} onAccept={handleAcceptBill} onReject={handleRejectBill} onTransfer={handleTransferBill} onClose={handleCloseBill}
             />
           )}
           {active === "new-bill" && <RegisterBill onCreate={handleCreate} nextId={makeBillId(bills.length + 1)} contractors={contractors} sites={projects} />}
