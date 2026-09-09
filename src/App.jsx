@@ -52,7 +52,18 @@ const STATUS_COLOR = {
 // These are only the *starting* lists — used to seed Supabase the very first time
 // the app runs. After that, Projects and Contractors are editable in the app and
 // persisted to Supabase (see the "billtrack:projects" / "billtrack:contractors" keys).
-const DEFAULT_CONTRACTORS = ["Shree Balaji Construction", "Nova Infra Works", "Om Sai Builders", "Vertex Engineering Pvt Ltd"];
+const DEFAULT_CONTRACTOR_NAMES = ["Shree Balaji Construction", "Nova Infra Works", "Om Sai Builders", "Vertex Engineering Pvt Ltd"];
+// Contractor records are full profiles (firm name, GST, PAN, contact) rather
+// than plain strings. makeDefaultContractors() builds the starter set; any
+// older data saved back when contractors were plain strings gets normalized
+// into this same shape the moment it's loaded (see normalizeContractor()).
+const makeDefaultContractors = () => DEFAULT_CONTRACTOR_NAMES.map(name => ({
+  id: uid(), firmName: name, gstNo: "", panNo: "", contactPerson: "", contactNo: "",
+}));
+function normalizeContractor(c) {
+  if (typeof c === "string") return { id: uid(), firmName: c, gstNo: "", panNo: "", contactPerson: "", contactNo: "" };
+  return { id: c.id || uid(), firmName: c.firmName || "", gstNo: c.gstNo || "", panNo: c.panNo || "", contactPerson: c.contactPerson || "", contactNo: c.contactNo || "" };
+}
 const DEFAULT_SITES = ["Skyline Residency - Tower A", "Skyline Residency - Tower B", "Green Valley Phase 2", "Metro Business Park"];
 const BILL_TYPES = ["RA Bill", "Final Bill", "Material Bill", "Other"];
 const NAV_ITEMS = [
@@ -332,7 +343,7 @@ function seedBills() {
     }
     return {
       id: makeBillId(i + 1),
-      contractor: DEFAULT_CONTRACTORS[r.c], site: DEFAULT_SITES[r.s], building: "Wing " + String.fromCharCode(65 + (i % 3)),
+      contractor: DEFAULT_CONTRACTOR_NAMES[r.c], site: DEFAULT_SITES[r.s], building: "Wing " + String.fromCharCode(65 + (i % 3)),
       workOrder: `WO-${2026}-${100 + i}`, po: `PO-${4000 + i}`, contractorBillNo: `CB-${300 + i}`,
       billType: r.type, billDate: received, billPeriod: "Monthly", grossAmount: r.gross, gst, tds,
       otherDeductions: 0, netAmount: net, dateReceived: received, submittedBy: "Priya Nair",
@@ -779,7 +790,7 @@ function RegisterBill({ onCreate, nextId, contractors, sites }) {
             <Field label="Contractor" required>
               <select className={inputCls} value={form.contractor} onChange={e => set("contractor", e.target.value)}>
                 <option value="">Select Contractor</option>
-                {contractors.map(c => <option key={c}>{c}</option>)}
+                {contractors.map(c => <option key={c.id} value={c.firmName}>{c.firmName}</option>)}
               </select>
             </Field>
             <Field label="Site / Project" required>
@@ -1563,6 +1574,106 @@ function ManagedListPage({ title, sub, items, icon: Icon, onAdd, onDelete, place
   );
 }
 
+function ContractorsManager({ contractors, onAdd, onDelete }) {
+  const [firmName, setFirmName] = useState("");
+  const [gstNo, setGstNo] = useState("");
+  const [panNo, setPanNo] = useState("");
+  const [contactPerson, setContactPerson] = useState("");
+  const [contactNo, setContactNo] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = (e) => {
+    e.preventDefault();
+    const fn = firmName.trim();
+    const pan = panNo.trim();
+    const cp = contactPerson.trim();
+    const cn = contactNo.trim();
+    if (!fn || !pan || !cp || !cn) {
+      setError("Firm Name, PAN No., Contact Person, and Contact No. are required.");
+      return;
+    }
+    if (contractors.some(c => c.firmName.toLowerCase() === fn.toLowerCase())) {
+      setError(`"${fn}" is already on the list.`);
+      return;
+    }
+    setError("");
+    onAdd({ firmName: fn, gstNo: gstNo.trim(), panNo: pan, contactPerson: cp, contactNo: cn });
+    setFirmName(""); setGstNo(""); setPanNo(""); setContactPerson(""); setContactNo("");
+  };
+
+  const remove = (c) => {
+    if (window.confirm(`Remove "${c.firmName}"? Existing bills that reference it will keep showing this name — this only affects the dropdown for new bills.`)) {
+      onDelete(c.id);
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-bold" style={{ color: NAVY }}>Contractors</h1>
+        <p className="text-sm text-slate-500">Registered contractors</p>
+      </div>
+
+      <SectionCard title="Add Contractor" icon={PlusCircle}>
+        <form onSubmit={submit} className="grid sm:grid-cols-2 gap-3">
+          <Field label="Firm Name" required>
+            <input className={inputCls} value={firmName} onChange={(e) => setFirmName(e.target.value)} placeholder="e.g. Everest Construction Co." />
+          </Field>
+          <Field label="GST No.">
+            <input className={inputCls} value={gstNo} onChange={(e) => setGstNo(e.target.value)} placeholder="Optional" />
+          </Field>
+          <Field label="PAN No." required>
+            <input className={inputCls} value={panNo} onChange={(e) => setPanNo(e.target.value)} placeholder="e.g. AAAAA0000A" />
+          </Field>
+          <Field label="Contact Person" required>
+            <input className={inputCls} value={contactPerson} onChange={(e) => setContactPerson(e.target.value)} placeholder="Name" />
+          </Field>
+          <Field label="Contact No." required>
+            <input className={inputCls} value={contactNo} onChange={(e) => setContactNo(e.target.value)} placeholder="Phone number" />
+          </Field>
+          <div className="sm:col-span-2">
+            <button type="submit" className="px-4 py-2.5 rounded-lg text-white text-sm font-semibold" style={{ backgroundColor: NAVY }}>
+              Add Contractor
+            </button>
+          </div>
+        </form>
+        {error && <div className="text-sm text-red-600 mt-2">{error}</div>}
+      </SectionCard>
+
+      <SectionCard title="Contractors" icon={Truck}>
+        {contractors.length === 0 ? (
+          <Empty text="No contractors yet — add one above." />
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {contractors.map((c) => (
+              <li key={c.id} className="py-3 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                    <Truck size={15} className="text-slate-400 shrink-0" />
+                    {c.firmName}
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span>PAN: {c.panNo || "—"}</span>
+                    <span>GST: {c.gstNo || "—"}</span>
+                    <span>Contact: {c.contactPerson || "—"} {c.contactNo ? `(${c.contactNo})` : ""}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => remove(c)}
+                  title={`Remove ${c.firmName}`}
+                  className="text-slate-400 hover:text-red-600 shrink-0 p-1"
+                >
+                  <X size={16} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
 function UsersManager({ users, onAdd, onDelete, onSendReset, currentUserEmail, superAdminConfigured }) {
   const [name, setName] = useState("");
   const [designation, setDesignation] = useState(DESIGNATION_OPTIONS[0]);
@@ -1815,14 +1926,17 @@ export default function App({ user, onLogout }) {
       try {
         const res = await storage.get("billtrack:contractors", true);
         if (res && res.value) {
-          setContractors(JSON.parse(res.value));
+          // Normalize in case this data was saved back when contractors were
+          // plain strings — turns each into the full profile shape.
+          setContractors(JSON.parse(res.value).map(normalizeContractor));
         } else {
-          setContractors(DEFAULT_CONTRACTORS);
-          await storage.set("billtrack:contractors", JSON.stringify(DEFAULT_CONTRACTORS), true);
+          const seededContractors = makeDefaultContractors();
+          setContractors(seededContractors);
+          await storage.set("billtrack:contractors", JSON.stringify(seededContractors), true);
         }
       } catch (e) {
         console.error("Failed to load contractors from Supabase:", e);
-        setContractors(DEFAULT_CONTRACTORS);
+        setContractors(makeDefaultContractors());
       }
 
       try {
@@ -1860,8 +1974,10 @@ export default function App({ user, onLogout }) {
 
   const addProject = useCallback((name) => persistProjects([...projects, name]), [projects, persistProjects]);
   const deleteProject = useCallback((name) => persistProjects(projects.filter((p) => p !== name)), [projects, persistProjects]);
-  const addContractor = useCallback((name) => persistContractors([...contractors, name]), [contractors, persistContractors]);
-  const deleteContractor = useCallback((name) => persistContractors(contractors.filter((c) => c !== name)), [contractors, persistContractors]);
+  const addContractor = useCallback((contractorData) => {
+    persistContractors([...contractors, { id: uid(), ...contractorData }]);
+  }, [contractors, persistContractors]);
+  const deleteContractor = useCallback((id) => persistContractors(contractors.filter((c) => c.id !== id)), [contractors, persistContractors]);
 
   const persistUsers = useCallback(async (next) => {
     setUsers(next);
@@ -2193,11 +2309,7 @@ export default function App({ user, onLogout }) {
             />
           )}
           {active === "contractors" && (
-            <ManagedListPage
-              title="Contractors" sub="Registered contractors" icon={Truck} singular="Contractor"
-              placeholder="e.g. Everest Construction Co."
-              items={contractors} onAdd={addContractor} onDelete={deleteContractor}
-            />
+            <ContractorsManager contractors={contractors} onAdd={addContractor} onDelete={deleteContractor} />
           )}
           {active === "holidays" && <SimpleListPage title="Holidays" sub="Excluded from working-day pending calculations" icon={CalendarDays}
             items={["26 Jan 2026 — Republic Day", "15 Aug 2026 — Independence Day", "02 Oct 2026 — Gandhi Jayanti", "25 Dec 2026 — Christmas"]} />}
