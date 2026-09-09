@@ -245,18 +245,19 @@ function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTran
   }
 
   // Whether rejecting right now would send the bill back to a previous
-  // holder (bounce-back — simple, no remark needed) or whether this is the
-  // bill's original registrant with nobody left before them, in which case
-  // rejecting is final and needs a remark before the bill closes for good.
+  // holder (bounce-back) or whether this is the bill's original registrant
+  // with nobody left before them, in which case rejecting is final and
+  // closes the bill for good. Either way, a remark is required — so the
+  // history always makes clear why each person in the chain rejected it.
   const isFinalReject = wouldBeFinalReject(bill, profile);
 
-  if (confirmingReject && isFinalReject) {
+  if (confirmingReject) {
     return (
       <div className="flex items-center gap-1.5 flex-wrap" onClick={(e) => e.stopPropagation()}>
         <input
           value={rejectRemarks}
           onChange={(e) => setRejectRemarks(e.target.value)}
-          placeholder="Remarks (required to reject & close)"
+          placeholder={isFinalReject ? "Remarks (required to reject & close)" : "Remarks (required — why are you rejecting?)"}
           className="text-xs rounded-lg border border-slate-300 px-2 py-1.5 w-44"
         />
         <button
@@ -265,7 +266,7 @@ function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTran
           className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white disabled:opacity-40 shrink-0"
           style={{ backgroundColor: RED }}
         >
-          Reject &amp; Close
+          {isFinalReject ? "Reject & Close" : "Reject"}
         </button>
         <button onClick={() => { setConfirmingReject(false); setRejectRemarks(""); }} className="text-xs text-slate-400 hover:text-slate-600 shrink-0">
           Cancel
@@ -280,13 +281,7 @@ function BillAssignmentAction({ bill, profile, users, onAccept, onReject, onTran
         Accept
       </button>
       <button
-        onClick={() => {
-          if (isFinalReject) {
-            setConfirmingReject(true);
-          } else if (window.confirm("Reject this bill? It will be sent back to the previous holder for review.")) {
-            onReject(bill.id);
-          }
-        }}
+        onClick={() => setConfirmingReject(true)}
         className="text-xs font-semibold px-2.5 py-1.5 rounded-lg text-white" style={{ backgroundColor: RED }}>
         Reject
       </button>
@@ -1057,13 +1052,27 @@ const REPORT_TABS = [
 function Reports({ bills, users }) {
   const [tab, setTab] = useState("register");
   const [projectFilter, setProjectFilter] = useState("All");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   const projectOptions = useMemo(() => {
     const names = Array.from(new Set(bills.map(b => b.site).filter(Boolean))).sort();
     return ["All", ...names];
   }, [bills]);
 
-  const filteredBills = projectFilter === "All" ? bills : bills.filter(b => b.site === projectFilter);
+  const filteredBills = useMemo(() => {
+    let result = projectFilter === "All" ? bills : bills.filter(b => b.site === projectFilter);
+    if (dateFrom) {
+      const fromTime = new Date(dateFrom).getTime();
+      result = result.filter(b => b.billDate >= fromTime);
+    }
+    if (dateTo) {
+      // Include the whole "to" day, not just midnight of that day.
+      const toTime = new Date(dateTo).getTime() + 86400000 - 1;
+      result = result.filter(b => b.billDate <= toTime);
+    }
+    return result;
+  }, [bills, projectFilter, dateFrom, dateTo]);
 
   return (
     <div className="space-y-5">
@@ -1080,6 +1089,23 @@ function Reports({ bills, users }) {
             <FileText size={15} /> Print / PDF
           </button>
         </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-wrap items-end gap-3">
+        <Field label="Bill Date From">
+          <input type="date" className={inputCls} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </Field>
+        <Field label="Bill Date To">
+          <input type="date" className={inputCls} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </Field>
+        {(dateFrom || dateTo) && (
+          <button
+            onClick={() => { setDateFrom(""); setDateTo(""); }}
+            className="px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Clear Dates
+          </button>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -1155,17 +1181,17 @@ function billDelayInfo(bill) {
 }
 
 function BillRegisterReport({ bills, users }) {
-  const cols = ["Bill ID", "Contractor", "Site", "Type", "Bill Date", "Amount", "Status", "Holder", "Delay Days"];
+  const cols = ["Bill ID", "Bill No.", "Contractor", "Site", "Type", "Bill Date", "Amount", "Status", "Holder", "Delay Days"];
   const rows = bills.map(b => {
     const d = billDelayInfo(b);
     const delayCell = !d ? <span className="text-slate-300">—</span> : (
       <span className={`font-semibold ${d.over ? "text-red-600" : "text-green-600"}`}>{d.label}</span>
     );
-    return [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), fmtINR(b.netAmount), <Badge key={b.id} status={b.status} />, holderDisplay(b, users), delayCell];
+    return [b.id, b.contractorBillNo || "—", b.contractor, b.site, b.billType, fmtDate(b.billDate), fmtINR(b.netAmount), <Badge key={b.id} status={b.status} />, holderDisplay(b, users), delayCell];
   });
   return <ReportShell title="Bill Register Report" count={bills.length} onExport={() => downloadCsv("bill-register.csv", cols, bills.map(b => {
     const d = billDelayInfo(b);
-    return [b.id, b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, holderDisplay(b, users), d ? d.label : "-"];
+    return [b.id, b.contractorBillNo || "", b.contractor, b.site, b.billType, fmtDate(b.billDate), b.netAmount, b.status, holderDisplay(b, users), d ? d.label : "-"];
   }))}>
     <Table cols={cols} rows={rows} />
   </ReportShell>;
@@ -1173,12 +1199,12 @@ function BillRegisterReport({ bills, users }) {
 
 function PendingBillReport({ bills, users }) {
   const pending = bills.filter(isOpenBill);
-  const cols = ["Bill ID", "Contractor", "Site", "Stage", "Holder", "Amount", "Received", "Pending Days"];
+  const cols = ["Bill ID", "Bill No.", "Contractor", "Site", "Stage", "Holder", "Amount", "Received", "Pending Days"];
   const rows = pending.map(b => {
     const d = daysBetween(b.dateReceived, Date.now());
-    return [b.id, b.contractor, b.site, b.status, holderDisplay(b, users), fmtINR(b.netAmount), fmtDate(b.dateReceived), <span key={b.id} className={d > 15 ? "text-red-600 font-semibold" : d > 7 ? "text-amber-600 font-semibold" : ""}>{d}d</span>];
+    return [b.id, b.contractorBillNo || "—", b.contractor, b.site, b.status, holderDisplay(b, users), fmtINR(b.netAmount), fmtDate(b.dateReceived), <span key={b.id} className={d > 15 ? "text-red-600 font-semibold" : d > 7 ? "text-amber-600 font-semibold" : ""}>{d}d</span>];
   });
-  return <ReportShell title="Pending Bill Report" count={pending.length} onExport={() => downloadCsv("pending-bills.csv", cols, pending.map(b => [b.id, b.contractor, b.site, b.status, holderDisplay(b, users), b.netAmount, fmtDate(b.dateReceived), daysBetween(b.dateReceived, Date.now())]))}>
+  return <ReportShell title="Pending Bill Report" count={pending.length} onExport={() => downloadCsv("pending-bills.csv", cols, pending.map(b => [b.id, b.contractorBillNo || "", b.contractor, b.site, b.status, holderDisplay(b, users), b.netAmount, fmtDate(b.dateReceived), daysBetween(b.dateReceived, Date.now())]))}>
     <Table cols={cols} rows={rows} />
   </ReportShell>;
 }
@@ -1218,9 +1244,10 @@ function GroupedReport({ bills, groupKey, title, icon }) {
     const map = {};
     bills.forEach(b => {
       const k = b[groupKey];
-      if (!map[k]) map[k] = { name: k, total: 0, totalAmt: 0, pending: 0, pendingAmt: 0, approved: 0, paid: 0, paidAmt: 0 };
+      if (!map[k]) map[k] = { name: k, total: 0, totalAmt: 0, pending: 0, pendingAmt: 0, approved: 0, paid: 0, paidAmt: 0, billIds: [] };
       const g = map[k];
       g.total++; g.totalAmt += b.netAmount;
+      g.billIds.push(b.id);
       if (isOpenBill(b)) { g.pending++; g.pendingAmt += b.netAmount; }
       if (["Approved", "Sent to Accounts", "Payment Processing", "Paid"].includes(b.status)) g.approved += b.netAmount;
       if (b.status === "Paid") { g.paid++; g.paidAmt += b.netAmount; }
@@ -1228,9 +1255,14 @@ function GroupedReport({ bills, groupKey, title, icon }) {
     return Object.values(map);
   }, [bills, groupKey]);
 
-  const cols = ["Name", "Total Bills", "Total Amount", "Pending", "Pending Amount", "Approved Amount", "Paid Bills", "Paid Amount"];
-  const rows = groups.map(g => [g.name, g.total, fmtINR(g.totalAmt), g.pending, fmtINR(g.pendingAmt), fmtINR(g.approved), g.paid, fmtINR(g.paidAmt)]);
-  return <ReportShell title={title} count={groups.length} onExport={() => downloadCsv(title.toLowerCase().replace(/\s+/g, "-") + ".csv", cols, groups.map(g => [g.name, g.total, g.totalAmt, g.pending, g.pendingAmt, g.approved, g.paid, g.paidAmt]))}>
+  const cols = ["Name", "Bill Numbers", "Total Bills", "Total Amount", "Pending", "Pending Amount", "Approved Amount", "Paid Bills", "Paid Amount"];
+  const rows = groups.map(g => {
+    const shown = g.billIds.slice(0, 3).join(", ");
+    const extra = g.billIds.length > 3 ? ` +${g.billIds.length - 3} more` : "";
+    const billNumbersCell = <span title={g.billIds.join(", ")} className="text-xs">{shown}{extra}</span>;
+    return [g.name, billNumbersCell, g.total, fmtINR(g.totalAmt), g.pending, fmtINR(g.pendingAmt), fmtINR(g.approved), g.paid, fmtINR(g.paidAmt)];
+  });
+  return <ReportShell title={title} count={groups.length} onExport={() => downloadCsv(title.toLowerCase().replace(/\s+/g, "-") + ".csv", cols, groups.map(g => [g.name, g.billIds.join(" | "), g.total, g.totalAmt, g.pending, g.pendingAmt, g.approved, g.paid, g.paidAmt]))}>
     <Table cols={cols} rows={rows} />
   </ReportShell>;
 }
@@ -1417,16 +1449,20 @@ function ManagementDashboard({ bills, users }) {
         </SectionCard>
         <SectionCard title="Site-wise Pending Amount" icon={Building2}>
           {siteWise.length === 0 ? <Empty /> : (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={siteWise} layout="vertical" margin={{ left: 20 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#EEF1F4" /><XAxis type="number" tick={{ fontSize: 10 }} /><YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={120} /><Tooltip formatter={v => fmtINR(v)} /><Bar dataKey="amount" fill={TEAL} radius={[0, 6, 6, 0]} /></BarChart>
-            </ResponsiveContainer>
+            <div className="max-h-[280px] overflow-y-auto">
+              <ResponsiveContainer width="100%" height={Math.max(220, siteWise.length * 40)}>
+                <BarChart data={siteWise} layout="vertical" margin={{ left: 20 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#EEF1F4" /><XAxis type="number" tick={{ fontSize: 10 }} /><YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={120} /><Tooltip formatter={v => fmtINR(v)} /><Bar dataKey="amount" fill={TEAL} radius={[0, 6, 6, 0]} /></BarChart>
+              </ResponsiveContainer>
+            </div>
           )}
         </SectionCard>
         <SectionCard title="Contractor-wise Outstanding" icon={Truck}>
           {contractorWise.length === 0 ? <Empty /> : (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={contractorWise} layout="vertical" margin={{ left: 20 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#EEF1F4" /><XAxis type="number" tick={{ fontSize: 10 }} /><YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={130} /><Tooltip formatter={v => fmtINR(v)} /><Bar dataKey="amount" fill={AMBER} radius={[0, 6, 6, 0]} /></BarChart>
-            </ResponsiveContainer>
+            <div className="max-h-[280px] overflow-y-auto">
+              <ResponsiveContainer width="100%" height={Math.max(220, contractorWise.length * 40)}>
+                <BarChart data={contractorWise} layout="vertical" margin={{ left: 20 }}><CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#EEF1F4" /><XAxis type="number" tick={{ fontSize: 10 }} /><YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={130} /><Tooltip formatter={v => fmtINR(v)} /><Bar dataKey="amount" fill={AMBER} radius={[0, 6, 6, 0]} /></BarChart>
+              </ResponsiveContainer>
+            </div>
           )}
         </SectionCard>
         <SectionCard title="Bill Ageing" icon={Clock}>
@@ -1986,7 +2022,7 @@ export default function App({ user, onLogout }) {
           assignedTo: b.registeredBy,
           awaitingTransfer: false,
           assignmentChain: chain,
-          history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, kind: "declined_bounce", remarks: `Declined by ${profile.name} (${profile.designation}) — returned to ${registrant ? `${registrant.name} (${registrant.designation})` : "the bill's original registrant"} for review.` }],
+          history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, kind: "declined_bounce", remarks: `Declined by ${profile.name} (${profile.designation}) — returned to ${registrant ? `${registrant.name} (${registrant.designation})` : "the bill's original registrant"} for review. Reason: ${remarks || "No reason given."}` }],
         };
       }
 
@@ -2011,7 +2047,7 @@ export default function App({ user, onLogout }) {
         assignedTo: prevHolderId,
         awaitingTransfer: false,
         assignmentChain: chain,
-        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, kind: "rejected_bounce", remarks: `Rejected by ${profile.name} (${profile.designation}) — sent back to ${prevHolder ? `${prevHolder.name} (${prevHolder.designation})` : "the previous holder"} for review.` }],
+        history: [...b.history, { user: profile.name, role: profile.designation, date: now, prevStatus: b.status, newStatus: b.status, kind: "rejected_bounce", remarks: `Rejected by ${profile.name} (${profile.designation}) — sent back to ${prevHolder ? `${prevHolder.name} (${prevHolder.designation})` : "the previous holder"} for review. Reason: ${remarks || "No reason given."}` }],
       };
     }));
   }, [bills, persist, profile, users]);
